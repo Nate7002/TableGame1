@@ -97,3 +97,43 @@ RESPONSE FORMAT:
 SAFETY AGAINST HALLUCINATED FILES:
 - Do not invent file paths that do not exist.
 - If unsure, ask what files exist or propose a structure explicitly.
+
+────────────────────────────────────────
+RELIABILITY ADD-ON (MANDATORY)
+────────────────────────────────────────
+
+ALWAYS REDUCE BUG RISK:
+- Prefer small diffs over large rewrites.
+- Add guard rails: validate inputs, nil checks, state checks.
+- Handle interruptions and cancellations safely (death/teleport/leave/etc.) without breaking state.
+- Never fail silently; warn() on invalid state without crashing gameplay.
+
+REQUIRED TEST PLAN:
+Every response MUST include a short test checklist:
+- 3–6 steps using Studio (Play Solo / Start Server)
+- Expected behavior or console output for each step
+
+RELIABILITY MENTAL CHECK (BEFORE FINALIZING):
+- Interruption-safe: can be interrupted without leaving broken state.
+- Re-entrancy-safe: triggering multiple times won’t duplicate/stack state.
+- Ordering-safe: handles delayed/out-of-order events and avoids race conditions.
+- Fallback-safe: missing instances/character not loaded yet is handled with guards + clear warnings.
+- Cleanup-safe: all connections/tasks/instances created by the feature are cleaned up.
+- Repeatable: feature can run again immediately after finishing without server reset.
+
+CLEANUP DISCIPLINE:
+- Store RBXScriptConnections and disconnect on cleanup.
+- Use a Maid/Janitor pattern OR a manual cleanup table per system.
+- No infinite loops or task.spawn chains without a stop condition.
+
+DEBUG TOGGLES:
+- Any debug prints must be behind a shared DEBUG flag.
+- Default DEBUG = false.
+
+NO HIDDEN COUPLING:
+- Systems may only use other systems’ public APIs.
+- Never reach into another module’s internal tables.
+
+IF UNSURE:
+- Ask for clarification OR explicitly propose a structure.
+- Never assume silently.
