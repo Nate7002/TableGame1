@@ -75,33 +75,32 @@ local function safeTeleport(player)
 	end)
 end
 
+local function ejectWinner(player)
+	if not (player and player.Character) then return end
+	
+	-- Unfreeze
+	freezePlayer(player, false)
+	
+	-- Force stand
+	local hum = player.Character:FindFirstChild("Humanoid")
+	if hum then
+		hum.Sit = false
+		hum:ChangeState(Enum.HumanoidStateType.GettingUp)
+	end
+end
+
 local function finishRound(tableModel, winner, loser, isTie)
 	local session = activeSessions[tableModel]
 	if not session then return end
 	
-	print(string.format("[RoundService] Round Ended for %s", tableModel.Name))
-	
-	if isTie then
-		print(" > Result: TIE")
-		for _, p in ipairs(session.players) do
-			FXService.PlayLose(p)
-			safeTeleport(p)
-		end
-	else
-		print(string.format(" > Result: Winner=%s, Loser=%s", winner.Name, loser.Name))
-		
-		-- Winner FX
-		FXService.PlayWin(winner)
-		FXService.PlayConfetti(winner)
-		resetPlayerState(winner) 
-		-- Winner stays at table (standing)
-		
-		-- Loser FX & TP
-		safeTeleport(loser)
-	end
-	
-	-- Clean up session
-	activeSessions[tableModel] = nil
+	-- Note: 'winner' and 'loser' args are deprecated in favor of parsing result data dynamically,
+	-- but the architecture keeps the signature.
+	-- We will look at the session.latestResult if stored, or just rely on arguments.
+	-- Actually, RoundService handles the plugin result inline in StartRound. 
+	-- This function 'finishRound' was used by the OLD hardcoded logic.
+	-- The NEW DoubleDown logic handles its own finish.
+	-- However, the user says "RoundService end-of-round logic is wrong".
+	-- Ah, I see: In StartRound (lines 145+), I have the logic that needs updating.
 end
 
 -- Public API
@@ -150,28 +149,75 @@ function RoundService.StartRound(tableModel, players)
 		local data = result.data
 		print(string.format("[RoundService] DoubleDown Result: Outcome=%s, Reward=%d", data.outcome, data.reward))
 		
-		-- For MVP: "ends the round by resetting both players to spawn"
-		-- In a real split, maybe we play a Win sound? 
-		-- For now, just safe teleport everyone as requested.
+		-- Logic:
+		-- Parse winners
+		local winners = data.winners or {}
+		local participants = players
 		
-		for _, p in ipairs(players) do
-			-- Optional: Play Win sound if they are in the 'winners' list?
-			-- The prompt implies just reset. I'll add a Win sound for good measure if they won.
-			local isWinner = false
-			if data.winners then
-				for _, w in ipairs(data.winners) do
-					if w == p then isWinner = true break end
-				end
+		local winnerSet = {}
+		for _, w in ipairs(winners) do winnerSet[w] = true end
+		
+		local losers = {}
+		for _, p in ipairs(participants) do
+			if not winnerSet[p] then table.insert(losers, p) end
+		end
+		
+		-- Sounds Logic
+		-- If ANY winners -> Winners get WinSound. Losers get Silence.
+		-- If NO winners (Both Lose) -> Everyone gets LoseSound.
+		
+		local soundPlayed = "None"
+		
+		if #winners > 0 then
+			soundPlayed = "WinSound (Winners Only)"
+			for _, w in ipairs(winners) do
+				FXService.PlayWin(w)
+				FXService.PlayConfetti(w)
 			end
-			
-			if isWinner then
-				FXService.PlayWin(p)
-			else
+			-- Losers: Silence (do nothing FX-wise)
+		else
+			-- Everyone lost
+			soundPlayed = "LoseSound (Everyone)"
+			for _, p in ipairs(participants) do
 				FXService.PlayLose(p)
 			end
-			
-			safeTeleport(p)
 		end
+		
+		-- Respawn Logic
+		-- Winners -> Stay seated (unfreeze only).
+		-- Losers -> Respawn.
+		-- Exception: If BOTH win (Split), BOTH respawn.
+		-- Exception: If BOTH lose, BOTH respawn.
+		
+		local respawned = {}
+		local ejected = {}
+		
+		if #winners == #participants then
+			-- All Won (Split) -> All Respawn
+			for _, p in ipairs(participants) do
+				safeTeleport(p)
+				table.insert(respawned, p.Name)
+			end
+		elseif #winners == 0 then
+			-- All Lost -> All Respawn
+			for _, p in ipairs(participants) do
+				safeTeleport(p)
+				table.insert(respawned, p.Name)
+			end
+		else
+			-- Mixed Result
+			for _, w in ipairs(winners) do
+				ejectWinner(w)
+				table.insert(ejected, w.Name)
+			end
+			for _, l in ipairs(losers) do
+				safeTeleport(l)
+				table.insert(respawned, l.Name)
+			end
+		end
+		
+		print(string.format("[RoundService] winners={%d} losers={%d} sound=%s respawned={%s} eject={%s}", 
+			#winners, #losers, soundPlayed, table.concat(respawned, ","), table.concat(ejected, ",")))
 		
 		-- Clean up session
 		activeSessions[tableModel] = nil

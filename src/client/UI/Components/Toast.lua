@@ -1,21 +1,29 @@
 local TweenService = game:GetService("TweenService")
 local Debris = game:GetService("Debris")
-
 local Theme = require(script.Parent.Parent.Theme)
 
 local Toast = {}
+Toast.__index = Toast
 
-function Toast.new(parent, text, duration)
+function Toast.new(parentGui)
+	local self = setmetatable({}, Toast)
+	self._parent = parentGui
+	return self
+end
+
+function Toast:Show(text, duration)
 	duration = duration or 3
+	
+	if not self._parent then return end
 	
 	local frame = Instance.new("Frame")
 	frame.Name = "Toast"
 	frame.BackgroundColor3 = Theme.Colors.Secondary
 	frame.BorderSizePixel = 0
-	frame.Position = UDim2.new(0.5, 0, 0.85, 0) -- Start lower
+	frame.Position = UDim2.new(0.5, 0, 0.85, 0)
 	frame.Size = UDim2.new(0, 300, 0, 50)
 	frame.AnchorPoint = Vector2.new(0.5, 1)
-	frame.Parent = parent
+	frame.Parent = self._parent
 	
 	local uiCorner = Instance.new("UICorner")
 	uiCorner.CornerRadius = Theme.Sizes.CornerRadius
@@ -47,7 +55,7 @@ function Toast.new(parent, text, duration)
 	
 	-- In
 	local tweenIn = TweenService:Create(frame, info, {
-		Position = UDim2.new(0.5, 0, 0.8, 0), -- Move up slightly
+		Position = UDim2.new(0.5, 0, 0.8, 0),
 		BackgroundTransparency = 0.1
 	})
 	local textTweenIn = TweenService:Create(label, info, { TextTransparency = 0 })
@@ -61,7 +69,7 @@ function Toast.new(parent, text, duration)
 	task.delay(duration, function()
 		if not frame.Parent then return end
 		local tweenOut = TweenService:Create(frame, info, {
-			Position = UDim2.new(0.5, 0, 0.75, 0), -- Float up more while fading
+			Position = UDim2.new(0.5, 0, 0.75, 0),
 			BackgroundTransparency = 1
 		})
 		local textTweenOut = TweenService:Create(label, info, { TextTransparency = 1 })
@@ -77,5 +85,8 @@ function Toast.new(parent, text, duration)
 	end)
 end
 
-return Toast
+function Toast:Destroy()
+	-- Toasts clean themselves up individually
+end
 
+return Toast

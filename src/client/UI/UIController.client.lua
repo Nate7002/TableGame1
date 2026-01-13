@@ -1,6 +1,5 @@
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local StarterGui = game:GetService("StarterGui")
 
 local UI = script.Parent
 local Components = UI.Components
@@ -17,8 +16,9 @@ local NotifyEvent = Remotes:WaitForChild("Notify")
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
-local activePopup = nil
 local screenGui = nil
+local popupComponent = nil
+local toastComponent = nil
 
 -- Init GUI
 local function getScreenGui()
@@ -34,28 +34,33 @@ local function getScreenGui()
 		gui.Parent = playerGui
 	end
 	screenGui = gui
+	
+	-- Initialize Components ONCE
+	if not popupComponent then
+		popupComponent = ChoicePopup.new(gui)
+	end
+	if not toastComponent then
+		toastComponent = Toast.new(gui)
+	end
+	
 	return gui
 end
 
 -- Handlers
 local function onPromptChoice(payload)
-	local gui = getScreenGui()
+	getScreenGui() -- Ensure created
 	
-	-- Close existing if needed
-	if activePopup then
-		activePopup:Close(nil) -- Cancel previous
-	end
-	
-	activePopup = ChoicePopup.new(gui, payload, function(choiceId)
-		-- Send response back to server
+	-- Show reusing the single instance
+	popupComponent:Show(payload, function(choiceId)
 		PromptResponseEvent:FireServer(choiceId)
-		activePopup = nil
 	end)
 end
 
 local function onNotify(text, duration)
-	local gui = getScreenGui()
-	Toast.new(gui, text, duration)
+	getScreenGui() -- Ensure created
+	
+	-- Show via singleton
+	toastComponent:Show(text, duration)
 end
 
 -- Listeners
@@ -63,4 +68,3 @@ PromptChoiceEvent.OnClientEvent:Connect(onPromptChoice)
 NotifyEvent.OnClientEvent:Connect(onNotify)
 
 print("[UIController] Started")
-
