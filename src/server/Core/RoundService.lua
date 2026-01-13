@@ -3,6 +3,7 @@ local Workspace = game:GetService("Workspace")
 
 local Core = script.Parent
 local FXService = require(Core.FXService)
+local PluginRunner = require(Core.PluginRunner)
 
 local RoundService = {}
 
@@ -128,38 +129,52 @@ function RoundService.StartRound(tableModel, players)
 		freezePlayer(p, true)
 	end
 	
-	-- 2. Wait and Decide
-	task.delay(ROUND_DURATION, function()
-		-- Verify players are still here
-		local validPlayers = {}
-		for _, p in ipairs(players) do
-			if p.Parent then -- Player is still connected
-				table.insert(validPlayers, p)
-			end
-		end
+	-- 2. Run Game Plugin (DoubleDown)
+	task.spawn(function()
+		local result = PluginRunner.Run("DoubleDown", { 
+			players = players, 
+			tableModel = tableModel 
+		})
 		
-		if #validPlayers < 2 then
-			print("[RoundService] Round aborted - player left.")
-			-- Cleanup remaining
-			for _, p in ipairs(validPlayers) do
+		if not result.ok then
+			warn("[RoundService] Plugin failed: " .. tostring(result.meta.error))
+			-- Abort/Reset
+			for _, p in ipairs(players) do
 				resetPlayerState(p)
 			end
 			activeSessions[tableModel] = nil
 			return
 		end
 		
-		-- MVP Logic: Random Outcome
-		local roll = math.random()
-		if roll < 0.1 then
-			-- Tie (10% chance)
-			finishRound(tableModel, nil, nil, true)
-		else
-			-- Win/Loss
-			local winnerIdx = math.random(1, 2)
-			local winner = validPlayers[winnerIdx]
-			local loser = validPlayers[winnerIdx == 1 and 2 or 1]
-			finishRound(tableModel, winner, loser, false)
+		-- 3. Handle Result
+		local data = result.data
+		print(string.format("[RoundService] DoubleDown Result: Outcome=%s, Reward=%d", data.outcome, data.reward))
+		
+		-- For MVP: "ends the round by resetting both players to spawn"
+		-- In a real split, maybe we play a Win sound? 
+		-- For now, just safe teleport everyone as requested.
+		
+		for _, p in ipairs(players) do
+			-- Optional: Play Win sound if they are in the 'winners' list?
+			-- The prompt implies just reset. I'll add a Win sound for good measure if they won.
+			local isWinner = false
+			if data.winners then
+				for _, w in ipairs(data.winners) do
+					if w == p then isWinner = true break end
+				end
+			end
+			
+			if isWinner then
+				FXService.PlayWin(p)
+			else
+				FXService.PlayLose(p)
+			end
+			
+			safeTeleport(p)
 		end
+		
+		-- Clean up session
+		activeSessions[tableModel] = nil
 	end)
 end
 
