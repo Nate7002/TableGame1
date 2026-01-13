@@ -2,10 +2,12 @@ local Core = script:WaitForChild("Core")
 local TableService = require(Core:WaitForChild("TableService"))
 local RoundService = require(Core:WaitForChild("RoundService"))
 local UIService = require(Core:WaitForChild("UIService"))
+local PluginRegistry = require(Core:WaitForChild("PluginRegistry"))
+local PluginRunner = require(Core:WaitForChild("PluginRunner"))
 local Players = game:GetService("Players")
 
 local function Start()
-	print("[GameManager] Starting Phase 1 Step 3...")
+	print("[GameManager] Starting Phase 1 Step 4...")
 	
 	-- Initialize Table Service
 	TableService.Init()
@@ -15,27 +17,23 @@ local function Start()
 		RoundService.StartRound(tableModel, players)
 	end)
 	
-	-- TEST HOOK: UI System
+	-- TEST HOOK: UI System (Step 3)
+	-- Players.PlayerAdded:Connect(function(player)
+	-- 	task.delay(3, function()
+	-- 		... (disabled for Step 4 focus)
+	-- 	end)
+	-- end)
+	
+	-- TEST HOOK: Plugin System (Step 4)
 	Players.PlayerAdded:Connect(function(player)
-		task.delay(3, function()
-			print("[TEST] Sending Choice Popup to " .. player.Name)
-			
-			local choice = UIService.PromptChoice(player, {
-				title = "Welcome to Table Game!",
-				description = "We are testing the new UI System. Please select an option below.",
-				options = {
-					{ id = "A", label = "Awesome" },
-					{ id = "B", label = "Cool" }
-				},
-				timeout = 10
-			})
-			
-			print("[TEST] Result from " .. player.Name .. ": ", choice)
-			
-			if choice then
-				UIService.Notify(player, "You chose: " .. choice, 3)
-			else
-				UIService.Notify(player, "You ignored the prompt!", 3)
+		player.Chatted:Connect(function(msg)
+			if msg == "/plugins" then
+				print("Available Plugins:", PluginRegistry.List())
+			elseif string.sub(msg, 1, 5) == "/run " then
+				local name = string.sub(msg, 6)
+				print("Running Plugin:", name)
+				local result = PluginRunner.Run(name, { player = player })
+				print("Result:", result)
 			end
 		end)
 	end)
