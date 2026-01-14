@@ -12,9 +12,6 @@
     "ServerStorage": {
       "Plugins": {
         "$path": "src/server/Plugins"
-      },
-      "Assets": {
-         "$path": "Assets" 
       }
     },
 

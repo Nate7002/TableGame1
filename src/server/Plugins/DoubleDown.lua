@@ -1,9 +1,13 @@
 local ServerScriptService = game:GetService("ServerScriptService")
+local ServerStorage = game:GetService("ServerStorage")
 local UIService = require(ServerScriptService.Server.Core.UIService)
+local SpinService = require(ServerScriptService.Server.Core.SpinService)
+
+-- Load config from ServerScriptService (Repo Config)
+local SpinConfig = require(ServerScriptService.Server.Config.SpinTable)
 
 local DoubleDown = {}
 
-local REWARDS = {100, 250, 500, 1000}
 local STAGE1_TIME = 10
 local STAGE2_TIME = 10
 
@@ -66,12 +70,17 @@ end
 
 function DoubleDown.Run(context)
 	local players = context.players
+	local tableModel = context.tableModel
 	if not players or #players < 2 then
 		return { ok = false, meta = { error = "Not enough players" } }
 	end
 	
 	local p1, p2 = players[1], players[2]
-	local reward = REWARDS[math.random(1, #REWARDS)]
+	
+	-- SPIN PHASE
+	print("[DoubleDown] Spinning for reward...")
+	local spinItem, spinCleanup = SpinService.SpinTable(tableModel, SpinConfig)
+	local reward = spinItem.value
 	
 	print("[DoubleDown] Starting Stage 1...")
 	
@@ -86,6 +95,7 @@ function DoubleDown.Run(context)
 	
 	-- Check Timeouts First
 	if c1 == "TIMEOUT" or c2 == "TIMEOUT" then
+		spinCleanup() -- Clean up visuals
 		if c1 == "TIMEOUT" and c2 == "TIMEOUT" then
 			outcome = "BOTH_TIMEOUT"
 			winners = {}
@@ -113,6 +123,8 @@ function DoubleDown.Run(context)
 	if c1 == "DOUBLEDOWN" and c2 == "DOUBLEDOWN" then
 		print("[DoubleDown] Both Doubled Down! Entering Stage 2...")
 		
+		spinCleanup() -- Clean up visuals before Stage 2
+		
 		-- Stage 2: Sudden Death (Split/Steal only)
 		local choices2 = getChoices(players, 2, reward * 2) 
 		finalReward = reward * 2
@@ -123,6 +135,7 @@ function DoubleDown.Run(context)
 		
 		-- Check Timeouts Stage 2
 		if sc1 == "TIMEOUT" or sc2 == "TIMEOUT" then
+			spinCleanup()
 			if sc1 == "TIMEOUT" and sc2 == "TIMEOUT" then
 				outcome = "BOTH_TIMEOUT_S2"
 				winners = {}
@@ -203,6 +216,8 @@ function DoubleDown.Run(context)
 			finalReward = 0
 		end
 	end
+	
+	spinCleanup() -- Clean up at end of logic
 	
 	return {
 		ok = true,
