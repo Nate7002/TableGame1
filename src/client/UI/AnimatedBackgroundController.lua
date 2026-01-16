@@ -33,21 +33,43 @@ function AnimatedBackgroundController.AttachAnimatedBackground(parentFrame, opts
 	bg.Name = "AnimatedBackground_Runtime"
 	bg.Size = UDim2.fromScale(1, 1)
 	bg.ZIndex = 0 -- Behind content
-	bg.Parent = parentFrame
 	
-	-- Apply Tint
-	local tintFrame = bg:FindFirstChild("Tint")
-	if tintFrame then
-		tintFrame.BackgroundColor3 = tintColor
-		tintFrame.BackgroundTransparency = 0.85 -- Stronger tint for visibility
+	-- Hard-enforce Fullscreen Layout for all layers
+	local layers = {"BasePanel", "HueBloom", "Tint", "Pattern", "Vignette"}
+	for _, name in ipairs(layers) do
+		local layer = bg:FindFirstChild(name)
+		if layer then
+			layer.Size = UDim2.fromScale(1, 1)
+			layer.Position = UDim2.fromScale(0, 0)
+			layer.AnchorPoint = Vector2.new(0, 0)
+			if layer:IsA("Frame") or layer:IsA("ImageLabel") then
+				layer.BorderSizePixel = 0
+			end
+		end
 	end
 	
-	-- Apply Pattern Motion
-	local pattern = bg:FindFirstChild("Pattern")
-	local connection
+	bg.Parent = parentFrame
 	
+	-- Apply Tint to HueBloom (NOT Pattern/Tint frame)
+	local hueBloom = bg:FindFirstChild("HueBloom")
+	if hueBloom then
+		hueBloom.BackgroundColor3 = tintColor
+		hueBloom.BackgroundTransparency = 0.90 -- Subtle tint
+	end
+	
+	-- Update the actual Tint frame if it exists (legacy support or extra layer)
+	local tintLayer = bg:FindFirstChild("Tint")
+	if tintLayer then
+		tintLayer.BackgroundColor3 = tintColor
+		tintLayer.BackgroundTransparency = 0.94 -- Very subtle
+	end
+	
+	-- Ensure Pattern stays neutral
+	local pattern = bg:FindFirstChild("Pattern")
 	if pattern then
-		-- Ensure initial state
+		pattern.ImageColor3 = Color3.fromRGB(200, 200, 200) -- Neutral light grey
+		pattern.ImageTransparency = 0.93 -- Very subtle
+		pattern.BackgroundTransparency = 1 -- Ensure pattern frame doesn't block background
 		pattern.Position = UDim2.fromScale(0, 0)
 		
 		-- Animation Loop

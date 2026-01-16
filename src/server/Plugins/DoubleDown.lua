@@ -8,7 +8,7 @@ local SpinConfig = require(ServerScriptService.Server.Config.SpinTable)
 
 local DoubleDown = {}
 
-local STAGE1_TIME = 10
+local STAGE1_TIME = 40
 local STAGE2_TIME = 10
 
 -- Helper: Get choices from both players in parallel
