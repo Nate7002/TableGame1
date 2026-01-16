@@ -12,6 +12,7 @@ function CountdownWidget.new(parent)
 	frame.BackgroundColor3 = Theme.Colors.Secondary
 	frame.BorderSizePixel = 0
 	frame.Size = UDim2.fromOffset(50, 36)
+	frame.ZIndex = 20 -- Widget Layer
 	frame.Parent = parent
 	self._frame = frame
 	
@@ -34,6 +35,7 @@ function CountdownWidget.new(parent)
 	value.TextColor3 = Theme.Colors.Danger
 	value.TextSize = 22
 	value.TextXAlignment = Enum.TextXAlignment.Center
+	value.ZIndex = 20
 	value.Parent = frame
 	self._valueLabel = value
 	

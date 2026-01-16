@@ -31,6 +31,7 @@ local function getScreenGui()
 		gui.ResetOnSpawn = false
 		gui.IgnoreGuiInset = true
 		gui.ScreenInsets = Enum.ScreenInsets.None
+		gui.ZIndexBehavior = Enum.ZIndexBehavior.Global
 		gui.Parent = playerGui
 	end
 	screenGui = gui

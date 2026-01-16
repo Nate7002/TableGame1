@@ -12,7 +12,7 @@ local STAGE1_TIME = 10
 local STAGE2_TIME = 10
 
 -- Helper: Get choices from both players in parallel
-local function getChoices(players, stage, currentReward)
+local function getChoices(players, stage, currentReward, rarity)
 	local choices = {}
 	local threads = 0
 	local thread = coroutine.running()
@@ -42,7 +42,8 @@ local function getChoices(players, stage, currentReward)
 				description = string.format("<font color=\"rgb(85, 255, 127)\">Reward: $%d</font>\nChoose your move!", currentReward),
 				options = options,
 				timeout = duration,
-				endTime = endTime
+				endTime = endTime,
+				rarity = rarity -- Pass rarity for UI tint
 			})
 			
 			choices[player] = choice or "TIMEOUT" -- Mark as TIMEOUT if nil
@@ -81,11 +82,12 @@ function DoubleDown.Run(context)
 	print("[DoubleDown] Spinning for reward...")
 	local spinItem, spinCleanup = SpinService.SpinTable(tableModel, SpinConfig)
 	local reward = spinItem.value
+	local rarity = spinItem.rarity -- Capture rarity
 	
 	print("[DoubleDown] Starting Stage 1...")
 	
 	-- Stage 1
-	local choices1 = getChoices(players, 1, reward)
+	local choices1 = getChoices(players, 1, reward, rarity)
 	local c1, c2 = choices1[p1], choices1[p2]
 	
 	local finalChoices = {[p1.UserId] = c1, [p2.UserId] = c2}
@@ -126,7 +128,7 @@ function DoubleDown.Run(context)
 		spinCleanup() -- Clean up visuals before Stage 2
 		
 		-- Stage 2: Sudden Death (Split/Steal only)
-		local choices2 = getChoices(players, 2, reward * 2) 
+		local choices2 = getChoices(players, 2, reward * 2, rarity) 
 		finalReward = reward * 2
 		
 		local sc1, sc2 = choices2[p1], choices2[p2]

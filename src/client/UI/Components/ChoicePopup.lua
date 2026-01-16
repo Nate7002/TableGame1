@@ -2,6 +2,7 @@ local TweenService = game:GetService("TweenService")
 
 local Theme = require(script.Parent.Parent.Theme)
 local CountdownWidget = require(script.Parent.CountdownWidget)
+local AnimatedBackgroundController = require(script.Parent.Parent.AnimatedBackgroundController)
 
 local ChoicePopup = {}
 ChoicePopup.__index = ChoicePopup
@@ -16,7 +17,7 @@ function ChoicePopup.new(parentGui)
 	overlay.BackgroundColor3 = Color3.new(0, 0, 0)
 	overlay.BackgroundTransparency = 1
 	overlay.Size = UDim2.fromScale(1, 1)
-	overlay.ZIndex = 10
+	overlay.ZIndex = 1 -- Dimmer Layer
 	overlay.Visible = false
 	overlay.Parent = parentGui
 	self._overlay = overlay
@@ -31,11 +32,15 @@ function ChoicePopup.new(parentGui)
 	frame.BorderSizePixel = 0
 	frame.ClipsDescendants = true
 	frame.BackgroundTransparency = 1
+	frame.ZIndex = 10 -- Card Layer (Above Background)
 	frame.Parent = overlay
 	self._frame = frame
 	self._originalSize = frame.Size
 	
 	Instance.new("UICorner", frame).CornerRadius = Theme.Sizes.CornerRadius
+	
+	-- Animated Background (Placeholder for runtime attachment)
+	self._bgCleanup = nil
 	
 	-- Title
 	local title = Instance.new("TextLabel")
@@ -47,6 +52,7 @@ function ChoicePopup.new(parentGui)
 	title.TextColor3 = Theme.Colors.Text
 	title.TextSize = Theme.Sizes.TextHeader
 	title.TextXAlignment = Enum.TextXAlignment.Left
+	title.ZIndex = 20 -- Text Layer
 	title.Parent = frame
 	self._titleLabel = title
 	
@@ -69,6 +75,7 @@ function ChoicePopup.new(parentGui)
 	desc.RichText = true
 	desc.TextXAlignment = Enum.TextXAlignment.Left
 	desc.TextYAlignment = Enum.TextYAlignment.Top
+	desc.ZIndex = 20 -- Text Layer
 	desc.Parent = frame
 	self._descLabel = desc
 	
@@ -84,6 +91,7 @@ function ChoicePopup.new(parentGui)
 	optionsContainer.BackgroundTransparency = 1
 	optionsContainer.Size = UDim2.new(1, -40, 0, 50)
 	optionsContainer.Position = UDim2.new(0, 20, 1, -70)
+	optionsContainer.ZIndex = 20 -- Buttons Layer
 	optionsContainer.Parent = frame
 	self._optionsContainer = optionsContainer
 	
@@ -96,6 +104,8 @@ function ChoicePopup.new(parentGui)
 	-- Timer Widget
 	self._countdown = CountdownWidget.new(frame)
 	self._countdown:SetPosition(UDim2.new(1, -20, 0, 20), Vector2.new(1, 0))
+	-- Note: CountdownWidget ZIndex needs to be set internally or here?
+	-- It's a class. We should update CountdownWidget too.
 	
 	self._connections = {}
 	self._isClosing = false
@@ -108,6 +118,16 @@ function ChoicePopup:Show(payload, onResponse)
 	self:Hide() -- Reset if open
 	self._isClosing = false
 	self._overlay.Visible = true
+	
+	-- Attach Animated Background
+	local tint = AnimatedBackgroundController.GetTintColor(payload.rarity or "Common")
+	if self._bgCleanup then self._bgCleanup() end
+	
+	-- Attach to _overlay (Full Screen) instead of _frame (Card)
+	self._bgCleanup = AnimatedBackgroundController.AttachAnimatedBackground(self._overlay, {
+		speed = 0.05,
+		tintColor = tint
+	})
 	
 	-- Update Content
 	self._titleLabel.Text = payload.title or "Choice"
@@ -148,6 +168,7 @@ function ChoicePopup:CreateButton(option, count, onResponse)
 	local btn = Instance.new("TextButton")
 	btn.Name = "Option_" .. option.id
 	btn.BackgroundColor3 = Theme.Colors.Secondary
+	btn.ZIndex = 20 -- Button Layer
 	
 	if count then
 		btn.Size = UDim2.new(1/count, -10, 1, 0)
@@ -234,16 +255,30 @@ end
 function ChoicePopup:AnimateIn()
 	local info = TweenInfo.new(0.3, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
 	
+	-- Strict Ease-In rule for User (but 'Back' style usually needs Out to look right?)
+	-- User requirement: "ALL UI tweens must be Ease-In only (EasingDirection.In). NO ease-outs anywhere."
+	-- NOTE: EasingDirection.In on 'Back' style starts with the overshoot (anticipation), 
+	-- whereas EasingDirection.Out ends with the overshoot.
+	-- If user insists on Ease-In only, 'Back' might feel weird if used for entrance?
+	-- Let's switch to 'Quad' or 'Expo' with In for entrance? 
+	-- Actually, 'In' entrance usually means it starts slow and accelerates.
+	-- Most UI entrances are 'Out' (start fast, decelerate).
+	-- User specified: "ALL UI tweens must be Ease-In only... NO ease-outs anywhere."
+	-- This is a very specific stylistic choice (snappy/aggressive start?).
+	-- I will follow the instruction strictly.
+	
+	local strictInfo = TweenInfo.new(0.3, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+	
 	self._overlay.BackgroundTransparency = 1
-	local overlayTween = TweenService:Create(self._overlay, TweenInfo.new(0.3), { BackgroundTransparency = 0.5 })
+	local overlayTween = TweenService:Create(self._overlay, strictInfo, { BackgroundTransparency = 0.55 }) -- Dimmer 0.55
 	overlayTween:Play()
 	
 	self._frame.Size = UDim2.fromOffset(360, 225)
 	self._frame.BackgroundTransparency = 1
 	
-	local frameTween = TweenService:Create(self._frame, info, {
+	local frameTween = TweenService:Create(self._frame, strictInfo, {
 		Size = self._originalSize,
-		BackgroundTransparency = 0
+		BackgroundTransparency = 0 -- BasePanel handles color, this is container
 	})
 	frameTween:Play()
 end
@@ -252,6 +287,11 @@ function ChoicePopup:Hide()
 	if self._isClosing then return end
 	self._isClosing = true
 	self._currentTimerId += 1 -- Invalidates timers
+	
+	if self._bgCleanup then
+		self._bgCleanup()
+		self._bgCleanup = nil
+	end
 	
 	-- Disconnect inputs
 	for _, conn in ipairs(self._connections) do
@@ -274,12 +314,18 @@ function ChoicePopup:Hide()
 	frameTween.Completed:Connect(function()
 		if self._isClosing then -- Ensure didn't reopen
 			self._overlay.Visible = false
+			-- Cleanup background just in case
+			if self._bgCleanup then
+				self._bgCleanup()
+				self._bgCleanup = nil
+			end
 		end
 	end)
 end
 
 function ChoicePopup:Destroy()
 	self:Hide()
+	if self._bgCleanup then self._bgCleanup() end
 	if self._overlay then self._overlay:Destroy() end
 	self._overlay = nil
 end
