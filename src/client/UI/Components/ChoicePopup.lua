@@ -50,6 +50,12 @@ function ChoicePopup.new(parentGui)
 	title.Parent = frame
 	self._titleLabel = title
 	
+	local titleStroke = Instance.new("UIStroke")
+	titleStroke.Color = Theme.Stroke.Color
+	titleStroke.Transparency = Theme.Stroke.Transparency
+	titleStroke.Thickness = Theme.Stroke.Thickness
+	titleStroke.Parent = title
+	
 	-- Description
 	local desc = Instance.new("TextLabel")
 	desc.Name = "Description"
@@ -60,10 +66,17 @@ function ChoicePopup.new(parentGui)
 	desc.TextColor3 = Theme.Colors.TextDim
 	desc.TextSize = Theme.Sizes.TextBody
 	desc.TextWrapped = true
+	desc.RichText = true
 	desc.TextXAlignment = Enum.TextXAlignment.Left
 	desc.TextYAlignment = Enum.TextYAlignment.Top
 	desc.Parent = frame
 	self._descLabel = desc
+	
+	local descStroke = Instance.new("UIStroke")
+	descStroke.Color = Theme.Stroke.Color
+	descStroke.Transparency = Theme.Stroke.Transparency
+	descStroke.Thickness = Theme.Stroke.Thickness
+	descStroke.Parent = desc
 	
 	-- Options Container
 	local optionsContainer = Instance.new("Frame")
@@ -148,6 +161,12 @@ function ChoicePopup:CreateButton(option, count, onResponse)
 	btn.TextSize = Theme.Sizes.TextBody
 	btn.AutoButtonColor = true
 	btn.Parent = self._optionsContainer
+	
+	local btnStroke = Instance.new("UIStroke")
+	btnStroke.Color = Theme.Stroke.Color
+	btnStroke.Transparency = Theme.Stroke.Transparency
+	btnStroke.Thickness = Theme.Stroke.Thickness
+	btnStroke.Parent = btn
 	
 	Instance.new("UICorner", btn).CornerRadius = Theme.Sizes.CornerRadius
 	

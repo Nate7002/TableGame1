@@ -22,9 +22,13 @@ local function freezePlayer(player, shouldFreeze)
 	if shouldFreeze then
 		hum.WalkSpeed = 0
 		hum.JumpPower = 0
+		hum.JumpHeight = 0 -- Prevent jumping if UseJumpPower is false
+		hum:SetStateEnabled(Enum.HumanoidStateType.Jumping, false)
 	else
 		hum.WalkSpeed = 16
 		hum.JumpPower = 50
+		hum.JumpHeight = 7.2 -- Standard height
+		hum:SetStateEnabled(Enum.HumanoidStateType.Jumping, true)
 	end
 end
 

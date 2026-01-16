@@ -37,6 +37,12 @@ function CountdownWidget.new(parent)
 	value.Parent = frame
 	self._valueLabel = value
 	
+	local valueStroke = Instance.new("UIStroke")
+	valueStroke.Color = Theme.Stroke.Color
+	valueStroke.Transparency = Theme.Stroke.Transparency
+	valueStroke.Thickness = Theme.Stroke.Thickness
+	valueStroke.Parent = value
+	
 	return self
 end
 

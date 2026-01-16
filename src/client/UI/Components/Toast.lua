@@ -46,6 +46,12 @@ function Toast:Show(text, duration)
 	label.TextWrapped = true
 	label.Parent = frame
 	
+	local labelStroke = Instance.new("UIStroke")
+	labelStroke.Color = Theme.Stroke.Color
+	labelStroke.Transparency = Theme.Stroke.Transparency
+	labelStroke.Thickness = Theme.Stroke.Thickness
+	labelStroke.Parent = label
+	
 	-- Animation
 	frame.BackgroundTransparency = 1
 	label.TextTransparency = 1

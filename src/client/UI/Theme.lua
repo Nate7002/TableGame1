@@ -11,8 +11,14 @@ local Theme = {
 	},
 	
 	Font = {
-		Header = Enum.Font.GothamBold,
-		Body = Enum.Font.Gotham,
+		Header = Enum.Font.Cartoon,
+		Body = Enum.Font.Cartoon,
+	},
+	
+	Stroke = {
+		Color = Color3.fromRGB(0, 0, 0),
+		Transparency = 0,
+		Thickness = 2,
 	},
 	
 	Sizes = {

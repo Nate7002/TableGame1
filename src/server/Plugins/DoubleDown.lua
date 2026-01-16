@@ -39,7 +39,7 @@ local function getChoices(players, stage, currentReward)
 		task.spawn(function()
 			local choice = UIService.PromptChoice(player, {
 				title = stage == 1 and "Double Down" or "SUDDEN DEATH",
-				description = string.format("Reward: $%d\nChoose your move!", currentReward),
+				description = string.format("<font color=\"rgb(85, 255, 127)\">Reward: $%d</font>\nChoose your move!", currentReward),
 				options = options,
 				timeout = duration,
 				endTime = endTime

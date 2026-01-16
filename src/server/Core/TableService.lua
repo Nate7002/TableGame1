@@ -155,6 +155,15 @@ local function setupTable(model)
 		prompt.ActionText = "Sit"
 		-- prompt.ObjectText = "Table" -- Optional
 	end
+
+	-- 4) Billboard Config Check
+	local spinDisplay = model:FindFirstChild("SpinDisplay")
+	local billboardAnchor = spinDisplay and spinDisplay:FindFirstChild("BillboardAnchor")
+	local billboardAttachment = billboardAnchor and billboardAnchor:FindFirstChild("BillboardAttachment")
+	
+	if not billboardAttachment then
+		warn(string.format("[TableService] Spawned table missing BillboardAttachment: %s", model:GetFullName()))
+	end
 	
 	-- State Init
 	activeTables[model] = {

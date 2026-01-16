@@ -4,53 +4,129 @@ local Debris = game:GetService("Debris")
 
 local SpinService = {}
 
+-- Config
+local DEBUG = false
+
 -- Assets
 local SPIN_MODELS_PATH = "Assets/DoubleDown/SpinItems/Models"
 local SPIN_UI_PATH = "Assets/DoubleDown/UI/SpinLabelBillboard"
 
 -- Helpers
-local function getAsset(path, name)
-	local current = ServerStorage
-	if string.sub(path, 1, 17) == "ReplicatedStorage" then
-		current = ReplicatedStorage
-		path = string.sub(path, 19)
+local function ResolvePath(root, path)
+	local current = root
+	local segments = string.split(path, "/")
+	
+	for _, segment in ipairs(segments) do
+		local nextInstance = current:FindFirstChild(segment)
+		if not nextInstance then
+			if DEBUG then
+				print(string.format("[SpinService] ResolvePath failed at segment '%s' in root '%s'", segment, current:GetFullName()))
+				print("Available children:")
+				for _, child in ipairs(current:GetChildren()) do
+					print(" - " .. child.Name)
+				end
+			end
+			return nil
+		end
+		current = nextInstance
 	end
 	
-	for _, part in ipairs(string.split(path, "/")) do
-		current = current:FindFirstChild(part)
-		if not current then return nil end
-	end
-	
-	if name then
-		return current:FindFirstChild(name)
+	if DEBUG then
+		print(string.format("[SpinService] Resolved path: %s", current:GetFullName()))
 	end
 	return current
 end
 
+local function getAsset(path, name)
+	-- Legacy helper - redirecting to ResolvePath where appropriate
+	-- Models are usually in ServerStorage
+	-- UI is usually in ReplicatedStorage
+	local root = ServerStorage
+	if string.sub(path, 1, 17) == "ReplicatedStorage" then
+		root = ReplicatedStorage
+		path = string.sub(path, 19)
+	end
+	
+	local result = ResolvePath(root, path)
+	
+	if result and name then
+		return result:FindFirstChild(name)
+	end
+	return result
+end
+
+-- Gradient Definitions (ColorSequences)
+local GRADIENT_COLORS = {
+	Rare = ColorSequence.new({
+		ColorSequenceKeypoint.new(0, Color3.fromRGB(0, 255, 255)),
+		ColorSequenceKeypoint.new(0.5, Color3.fromRGB(0, 150, 255)),
+		ColorSequenceKeypoint.new(1, Color3.fromRGB(0, 255, 255))
+	}),
+	Epic = ColorSequence.new({
+		ColorSequenceKeypoint.new(0, Color3.fromRGB(255, 0, 255)),
+		ColorSequenceKeypoint.new(0.5, Color3.fromRGB(170, 0, 255)),
+		ColorSequenceKeypoint.new(1, Color3.fromRGB(255, 0, 255))
+	}),
+	Mythic = ColorSequence.new({
+		ColorSequenceKeypoint.new(0, Color3.fromRGB(255, 215, 0)),
+		ColorSequenceKeypoint.new(0.5, Color3.fromRGB(255, 170, 0)),
+		ColorSequenceKeypoint.new(1, Color3.fromRGB(255, 255, 0))
+	}),
+	Ultra = ColorSequence.new({
+		ColorSequenceKeypoint.new(0, Color3.fromRGB(255, 0, 0)),
+		ColorSequenceKeypoint.new(0.33, Color3.fromRGB(255, 255, 0)),
+		ColorSequenceKeypoint.new(0.66, Color3.fromRGB(0, 255, 255)),
+		ColorSequenceKeypoint.new(1, Color3.fromRGB(255, 0, 255))
+	})
+}
+
 local function updateBillboard(billboard, item, config)
 	if not billboard then return end
 	
-	local frame = billboard:FindFirstChild("MainFrame") or billboard:FindFirstChild("Frame") -- Adjust based on structure
-	if not frame then return end
+	-- Robust finding: search recursively anywhere in the billboard
+	-- Note: "Rarity" is the new name for the main label (formerly ItemName)
+	local rarityLabel = billboard:FindFirstChild("Rarity", true) or billboard:FindFirstChild("ItemName", true)
+	local chanceLabel = billboard:FindFirstChild("Chance", true)
 	
-	local nameLabel = frame:FindFirstChild("ItemName")
-	local chanceLabel = frame:FindFirstChild("Chance")
-	local valueLabel = frame:FindFirstChild("Value")
+	if DEBUG then
+		if not (rarityLabel and chanceLabel) then
+			warn("[SpinService] updateBillboard: Missing rarity/chance labels in billboard hierarchy.")
+		end
+	end
 	
 	local color = config.RarityColors[item.rarity] or Color3.new(1,1,1)
 	
-	if nameLabel then 
-		nameLabel.Text = item.name 
-		nameLabel.TextColor3 = color
+	if rarityLabel then 
+		rarityLabel.Text = string.upper(item.rarity) -- Show RARITY instead of Name
+		rarityLabel.TextColor3 = color
+		
+		-- Handle Gradients (Disable all first, then enable specific)
+		local hasGradient = false
+		for _, child in ipairs(rarityLabel:GetChildren()) do
+			if child:IsA("UIGradient") then
+				child.Enabled = false
+			end
+		end
+		
+		-- Only apply gradient for Rare+
+		if GRADIENT_COLORS[item.rarity] then
+			local gradientName = "Gradient_" .. item.rarity
+			local gradient = rarityLabel:FindFirstChild(gradientName)
+			if gradient then
+				gradient.Enabled = true
+				gradient.Color = GRADIENT_COLORS[item.rarity]
+				gradient.Rotation = 45
+				rarityLabel.TextColor3 = Color3.new(1,1,1) -- White text to let gradient show
+				hasGradient = true
+			end
+		end
 	end
 	if chanceLabel then 
-		chanceLabel.Text = string.format("%.1f%%", item.chance) 
+		chanceLabel.Text = string.format("%.2f%% chance", item.chance) 
 		chanceLabel.TextColor3 = color
+		-- Ensure Chance label is always legible (no gradient, just color)
 	end
-	if valueLabel then 
-		valueLabel.Text = "$" .. item.value 
-		valueLabel.TextColor3 = color
-	end
+	-- Value label is hidden/unused
 end
 
 -- Public API
@@ -68,23 +144,87 @@ function SpinService.SpinTable(tableModel, spinConfig)
 	end
 	
 	-- Setup Billboard
-	local billboardTemplate = getAsset(SPIN_UI_PATH) -- Actually RepStorage
+	local billboardTemplate = ResolvePath(ReplicatedStorage, SPIN_UI_PATH)
 	local billboard
 	if billboardTemplate then
 		billboard = billboardTemplate:Clone()
+		billboard.Name = "SpinLabelBillboard_Runtime"
 		
 		local attachment = billboardAnchor and billboardAnchor:FindFirstChild("BillboardAttachment")
 		local adornee = attachment or billboardAnchor
 		
 		if adornee then
 			billboard.Adornee = adornee
-			billboard.Parent = tableModel
+			
+			-- Guarantee Parent is a workspace part (BillboardAnchor)
+			if billboardAnchor then
+				billboard.Parent = billboardAnchor
+			else
+				billboard.Parent = tableModel
+				warn(string.format("[SpinService] Billboard runtime not parented to BillboardAnchor (parent=%s)", tostring(billboard.Parent)))
+			end
+			
+			-- Force Visibility properties
 			billboard.Enabled = true
+			billboard.AlwaysOnTop = true
+			if billboard.MaxDistance < 50 then billboard.MaxDistance = 1000 end
+			
+			-- Safety: Ensure Size isn't 0
+			if billboard.Size == UDim2.fromScale(0, 0) and billboard.Size.X.Offset == 0 then
+				billboard.Size = UDim2.fromOffset(220, 60)
+			end
+			
+			-- Safety: Ensure Offset isn't 0 if it looks buried
+			if billboard.StudsOffset == Vector3.new(0, 0, 0) then
+				billboard.StudsOffset = Vector3.new(0, 2.5, 0)
+			end
+			
+			-- Layout Enforcement (Fix for overlapping labels in template)
+			local frame = billboard:FindFirstChild("MainFrame") or billboard:FindFirstChild("Frame")
+			if frame then
+				frame.BackgroundTransparency = 0.1 -- Dark rounded card aesthetic
+				frame.ZIndex = 1
+			end
+
+			local function enforceLabel(name, pos, size)
+				-- Try finding by new name "Rarity" first, then legacy "ItemName"
+				local label = billboard:FindFirstChild(name, true)
+				if name == "Rarity" and not label then
+					label = billboard:FindFirstChild("ItemName", true)
+				end
+				
+				if label then
+					label.BackgroundTransparency = 1 -- Transparent background
+					label.TextScaled = true
+					label.ZIndex = 2 -- On top of background
+					label.Position = pos
+					label.Size = size
+					
+					-- Ensure Global Style is Enforced
+					label.Font = Enum.Font.Cartoon
+					label.TextStrokeTransparency = 0
+					label.TextStrokeColor3 = Color3.new(0,0,0)
+					
+					if name == "Value" then
+						label.Visible = false -- Ensure Value is hidden
+					end
+				end
+			end
+
+			-- Rarity (was ItemName): Top ~60%
+			enforceLabel("Rarity", UDim2.new(0, 0, 0, 0), UDim2.new(1, 0, 0.6, 0))
+			-- Chance: Bottom ~40%
+			enforceLabel("Chance", UDim2.new(0, 0, 0.6, 0), UDim2.new(1, 0, 0.4, 0))
+			-- Value: Hidden
+			enforceLabel("Value", UDim2.new(0, 0, 0, 0), UDim2.new(0, 0, 0, 0))
+			
 		else
-			warn("[SpinService] FAILED to mount Billboard: Neither BillboardAnchor nor BillboardAttachment exists on " .. tableModel.Name)
+			warn("[SpinService] Billboard has nil Adornee; cannot render")
+			billboard:Destroy()
+			billboard = nil
 		end
 	else
-		warn("[SpinService] Missing billboard template at: " .. SPIN_UI_PATH)
+		warn(string.format("[SpinService] Missing billboard template at: ReplicatedStorage/%s", SPIN_UI_PATH))
 	end
 	
 	-- Spin Logic
@@ -139,10 +279,7 @@ function SpinService.SpinTable(tableModel, spinConfig)
 	if not currentItem then currentItem = spinConfig.PickRandom() end
 	
 	-- Cleanup UI after short delay? Or keep it for the round?
-	-- "Clean up: destroy old spawned spin model(s) + billboard when round ends."
-	-- So we return references for cleanup later or handle it here?
 	-- "DoubleDown plugin should call SpinService first, then proceed... Clean up when round ends."
-	-- We'll attach cleanup to the tableModel or return a cleanup function.
 	
 	local cleanup = function()
 		if currentModel then currentModel:Destroy() end
@@ -153,4 +290,3 @@ function SpinService.SpinTable(tableModel, spinConfig)
 end
 
 return SpinService
-
