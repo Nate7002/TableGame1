@@ -8,7 +8,8 @@ local PluginRunner = require(Core.PluginRunner)
 local RoundService = {}
 
 -- State
-local activeSessions = {} -- [tableModel] = { startTime = number, players = {Player} }
+local activeSessions = {} -- [tableModel] = { startTime = number, players = {Player}, state = "SPINNING"|"STAGE1"|"STAGE2"|"RESOLVING"|"ENDED", spinStopFlag = boolean?, abortFlag = boolean? }
+local playerLeaveConnections = {} -- [Player] = connection
 
 -- Constants
 local ROUND_DURATION = 5
@@ -124,108 +125,415 @@ function RoundService.StartRound(tableModel, players)
 		
 	activeSessions[tableModel] = {
 		startTime = os.time(),
-		players = players
+		players = players,
+		state = "SPINNING",
+		spinStopFlag = false,
+		abortFlag = false,
+		spinCleanup = nil, -- Store cleanup function from SpinService
+		leaveHandled = false -- Prevent duplicate leave handling
 	}
+	
+	-- Fire MatchStart event to clients (for prompt disabling)
+	local Remotes = game:GetService("ReplicatedStorage"):WaitForChild("Remotes")
+	local MatchStartEvent = Remotes:FindFirstChild("MatchStart", 5)
+	if MatchStartEvent then
+		for _, p in ipairs(players) do
+			MatchStartEvent:FireClient(p)
+		end
+	end
+	
+	-- Track player leaves
+	local function onPlayerRemoving(leavingPlayer)
+		local session = activeSessions[tableModel]
+		if session and session.players then
+			for _, p in ipairs(session.players) do
+				if p == leavingPlayer then
+					-- Player left mid-match
+					print("[RoundService] Player", leavingPlayer.Name, "left mid-match, state:", session.state)
+					HandleOpponentLeave(tableModel, leavingPlayer.UserId, session.state)
+					break
+				end
+			end
+		end
+	end
+	
+	for _, p in ipairs(players) do
+		local conn = Players.PlayerRemoving:Connect(onPlayerRemoving)
+		playerLeaveConnections[p] = conn
+	end
 	
 	-- 1. Freeze
 	for _, p in ipairs(players) do
 		freezePlayer(p, true)
 	end
 	
-	-- 2. Run Game Plugin (DoubleDown)
-	task.spawn(function()
-		local result = PluginRunner.Run("DoubleDown", { 
-			players = players, 
-			tableModel = tableModel 
-		})
-		
-		if not result.ok then
-			warn("[RoundService] Plugin failed: " .. tostring(result.meta.error))
-			-- Abort/Reset
+		-- 2. Run Game Plugin (DoubleDown)
+		task.spawn(function()
+			print("[RoundService] Starting DoubleDown plugin at", os.clock())
+			
+			-- Validate required objects
+			if not tableModel or not tableModel.Parent then
+				warn("[RoundService] tableModel invalid, aborting")
+				for _, p in ipairs(players) do
+					resetPlayerState(p)
+				end
+				activeSessions[tableModel] = nil
+				return
+			end
+			
+			if not players or #players < 2 then
+				warn("[RoundService] Invalid players list, aborting")
+				for _, p in ipairs(players or {}) do
+					resetPlayerState(p)
+				end
+				activeSessions[tableModel] = nil
+				return
+			end
+			
+			local session = activeSessions[tableModel]
+			if not session then return end
+			
+			-- Store session reference for cleanup access
+			local result
+			local ok, err = pcall(function()
+				result = PluginRunner.Run("DoubleDown", { 
+					players = players, 
+					tableModel = tableModel,
+					session = session -- Pass session for abort checking and cleanup storage
+				})
+			end)
+			
+			if not ok then
+				warn("[RoundService] Plugin execution error: " .. tostring(err))
+				-- Cleanup on error
+				for _, p in ipairs(players) do
+					resetPlayerState(p)
+				end
+				activeSessions[tableModel] = nil
+				return
+			end
+			
+			if not result or not result.ok then
+				warn("[RoundService] Plugin failed: " .. tostring(result and result.meta and result.meta.error or "unknown"))
+				-- Check if it was an abort
+				if result and result.meta and result.meta.error == "Match aborted" then
+					print("[RoundService] Match aborted by plugin")
+					-- Ensure cleanup still runs even on abort
+					if session and session.spinCleanup then
+						pcall(session.spinCleanup)
+						session.spinCleanup = nil
+					end
+					return
+				end
+				-- Cleanup on error
+				if session and session.spinCleanup then
+					pcall(session.spinCleanup)
+					session.spinCleanup = nil
+				end
+				for _, p in ipairs(players) do
+					resetPlayerState(p)
+				end
+				activeSessions[tableModel] = nil
+				return
+			end
+			
+			-- 3. Handle Result
+			-- Check if match was aborted
+			if session and session.abortFlag then
+				print("[RoundService] Match was aborted, skipping result handling")
+				-- Ensure cleanup still runs even on abort
+				if session.spinCleanup then
+					pcall(session.spinCleanup)
+					session.spinCleanup = nil
+				end
+				return
+			end
+			
+			if not result.data then
+				warn("[RoundService] Plugin result missing data, aborting")
+				for _, p in ipairs(players) do
+					resetPlayerState(p)
+				end
+				activeSessions[tableModel] = nil
+				return
+			end
+			
+			local data = result.data
+			print(string.format("[RoundService] DoubleDown Result: Outcome=%s, Reward=%d", data.outcome or "nil", data.reward or 0))
+			print("[RoundService] Outcome computed at", os.clock())
+			
+			-- Logic:
+			-- Parse winners
+			local winners = data.winners or {}
+			local participants = players
+			
+			local winnerSet = {}
+			for _, w in ipairs(winners) do winnerSet[w] = true end
+			
+			local losers = {}
+			for _, p in ipairs(participants) do
+				if not winnerSet[p] then table.insert(losers, p) end
+			end
+			
+			-- Sounds Logic
+			-- If ANY winners -> Winners get WinSound. Losers get Silence.
+			-- If NO winners (Both Lose) -> Everyone gets LoseSound.
+			
+			local soundPlayed = "None"
+			
+			-- Close UI immediately when outcome is decided (BEFORE sounds)
+			print("[RoundService] About to resolve round; players:", #players)
+			local UIService = require(Core.UIService)
+			if UIService and UIService.CloseStageUI then
+				for _, p in ipairs(players) do
+					if p and p.Parent then
+						print("[RoundService] Closing Stage UI for", p.Name, "at", os.clock())
+						UIService.CloseStageUI(p)
+					end
+				end
+			else
+				warn("[RoundService] UIService or CloseStageUI missing, skipping UI close")
+			end
+			
+			-- Release Cinematic Camera (Direct Remote Fire)
+			local Remotes = game:GetService("ReplicatedStorage"):WaitForChild("Remotes")
+			local StopSpinCinematic = Remotes:WaitForChild("StopSpinCinematic")
 			for _, p in ipairs(players) do
-				resetPlayerState(p)
+				print("[CINE] STOP FIRING", p.Name, "at", os.clock())
+				StopSpinCinematic:FireClient(p)
 			end
+			
+			print("[RoundService] Sounds firing at", os.clock())
+			
+			if #winners > 0 then
+				soundPlayed = "WinSound (Winners Only)"
+				for _, w in ipairs(winners) do
+					FXService.PlayWin(w)
+					FXService.PlayConfetti(w)
+				end
+				-- Losers: Silence (do nothing FX-wise)
+			else
+				-- Everyone lost
+				soundPlayed = "LoseSound (Everyone)"
+				for _, p in ipairs(participants) do
+					FXService.PlayLose(p)
+				end
+			end
+			
+			-- Respawn Logic
+			-- Winners -> Stay seated (unfreeze only).
+			-- Losers -> Respawn.
+			-- Exception: If BOTH win (Split), BOTH respawn.
+			-- Exception: If BOTH lose, BOTH respawn.
+			
+			local respawned = {}
+			local ejected = {}
+			
+			if #winners == #participants then
+				-- All Won (Split) -> All Respawn
+				for _, p in ipairs(participants) do
+					safeTeleport(p)
+					table.insert(respawned, p.Name)
+				end
+			elseif #winners == 0 then
+				-- All Lost -> All Respawn
+				for _, p in ipairs(participants) do
+					safeTeleport(p)
+					table.insert(respawned, p.Name)
+				end
+			else
+				-- Mixed Result
+				for _, w in ipairs(winners) do
+					ejectWinner(w)
+					table.insert(ejected, w.Name)
+				end
+				for _, l in ipairs(losers) do
+					safeTeleport(l)
+					table.insert(respawned, l.Name)
+				end
+			end
+			
+			print(string.format("[RoundService] winners={%d} losers={%d} sound=%s respawned={%s} eject={%s}", 
+				#winners, #losers, soundPlayed, table.concat(respawned, ","), table.concat(ejected, ",")))
+			
+			-- Clean up session
+			-- Disconnect player leave connections
+			for _, p in ipairs(players) do
+				if playerLeaveConnections[p] then
+					playerLeaveConnections[p]:Disconnect()
+					playerLeaveConnections[p] = nil
+				end
+			end
+			
+			-- Cleanup spin visuals (item + billboard) if still present
+			if session and session.spinCleanup then
+				pcall(session.spinCleanup)
+				session.spinCleanup = nil
+				print("[RoundService] Spin cleanup called in normal resolve")
+			end
+			
+			-- Fire MatchEnd event to clients (for prompt re-enabling)
+			local MatchEndEvent = Remotes:FindFirstChild("MatchEnd", 5)
+			if MatchEndEvent then
+				for _, p in ipairs(players) do
+					if p and p.Parent then
+						MatchEndEvent:FireClient(p)
+					end
+				end
+			end
+			
 			activeSessions[tableModel] = nil
-			return
+			print("[RoundService] Cleanup complete (no crash) at", os.clock())
+		end)
+end
+
+-- Handle opponent leave based on match state
+function HandleOpponentLeave(tableModel, leaverUserId, currentState)
+	local session = activeSessions[tableModel]
+	if not session then return end
+	
+	-- Prevent duplicate handling
+	if session.leaveHandled then
+		print("[RoundService] Leave already handled for", tableModel.Name)
+		return
+	end
+	session.leaveHandled = true
+	
+	-- Set abort flag to stop any running loops
+	session.abortFlag = true
+	session.state = "ENDED"
+	
+	local remainingPlayers = {}
+	for _, p in ipairs(session.players) do
+		if p.UserId ~= leaverUserId and p.Parent then
+			table.insert(remainingPlayers, p)
 		end
-		
-		-- 3. Handle Result
-		local data = result.data
-		print(string.format("[RoundService] DoubleDown Result: Outcome=%s, Reward=%d", data.outcome, data.reward))
-		
-		-- Logic:
-		-- Parse winners
-		local winners = data.winners or {}
-		local participants = players
-		
-		local winnerSet = {}
-		for _, w in ipairs(winners) do winnerSet[w] = true end
-		
-		local losers = {}
-		for _, p in ipairs(participants) do
-			if not winnerSet[p] then table.insert(losers, p) end
+	end
+	
+	if #remainingPlayers == 0 then
+		-- No remaining players, just cleanup
+		AbortRound(tableModel, "All players left")
+		return
+	end
+	
+	local Remotes = game:GetService("ReplicatedStorage"):WaitForChild("Remotes")
+	
+	-- ALWAYS show toast notification (single reliable codepath)
+	local OpponentLeftToast = Remotes:FindFirstChild("OpponentLeftToast")
+	if OpponentLeftToast then
+		for _, p in ipairs(remainingPlayers) do
+			OpponentLeftToast:FireClient(p, "Opponent left! Ending match...", 2)
+			print("[RoundService] Toast fired to", p.Name)
 		end
+	else
+		warn("[RoundService] OpponentLeftToast remote not found")
+	end
+	
+	if currentState == "SPINNING" then
+		-- Opponent left during spin - stop spin and cinematic immediately
+		print("[RoundService] Opponent left during SPINNING")
 		
-		-- Sounds Logic
-		-- If ANY winners -> Winners get WinSound. Losers get Silence.
-		-- If NO winners (Both Lose) -> Everyone gets LoseSound.
+		-- Stop spin immediately
+		session.spinStopFlag = true
 		
-		local soundPlayed = "None"
-		
-		if #winners > 0 then
-			soundPlayed = "WinSound (Winners Only)"
-			for _, w in ipairs(winners) do
-				FXService.PlayWin(w)
-				FXService.PlayConfetti(w)
-			end
-			-- Losers: Silence (do nothing FX-wise)
-		else
-			-- Everyone lost
-			soundPlayed = "LoseSound (Everyone)"
-			for _, p in ipairs(participants) do
-				FXService.PlayLose(p)
-			end
-		end
-		
-		-- Respawn Logic
-		-- Winners -> Stay seated (unfreeze only).
-		-- Losers -> Respawn.
-		-- Exception: If BOTH win (Split), BOTH respawn.
-		-- Exception: If BOTH lose, BOTH respawn.
-		
-		local respawned = {}
-		local ejected = {}
-		
-		if #winners == #participants then
-			-- All Won (Split) -> All Respawn
-			for _, p in ipairs(participants) do
-				safeTeleport(p)
-				table.insert(respawned, p.Name)
-			end
-		elseif #winners == 0 then
-			-- All Lost -> All Respawn
-			for _, p in ipairs(participants) do
-				safeTeleport(p)
-				table.insert(respawned, p.Name)
-			end
-		else
-			-- Mixed Result
-			for _, w in ipairs(winners) do
-				ejectWinner(w)
-				table.insert(ejected, w.Name)
-			end
-			for _, l in ipairs(losers) do
-				safeTeleport(l)
-				table.insert(respawned, l.Name)
+		-- Stop cinematic for remaining player (immediate = true, skip freeze frame)
+		local StopSpinCinematic = Remotes:FindFirstChild("StopSpinCinematic")
+		if StopSpinCinematic then
+			for _, p in ipairs(remainingPlayers) do
+				StopSpinCinematic:FireClient(p, true) -- Pass true for immediate stop
 			end
 		end
+	else
+		-- Opponent left during Stage UI
+		print("[RoundService] Opponent left during", currentState)
 		
-		print(string.format("[RoundService] winners={%d} losers={%d} sound=%s respawned={%s} eject={%s}", 
-			#winners, #losers, soundPlayed, table.concat(respawned, ","), table.concat(ejected, ",")))
-		
-		-- Clean up session
-		activeSessions[tableModel] = nil
+		-- Stop cinematic if still active
+		local StopSpinCinematic = Remotes:FindFirstChild("StopSpinCinematic")
+		if StopSpinCinematic then
+			for _, p in ipairs(remainingPlayers) do
+				StopSpinCinematic:FireClient(p, true)
+			end
+		end
+	end
+	
+	-- Schedule abort after 2 seconds (will respawn remaining players)
+	task.delay(2, function()
+		AbortRound(tableModel, "Opponent left during " .. (currentState or "unknown"))
 	end)
+end
+
+-- Abort round cleanly (no rewards, no winners/losers)
+function AbortRound(tableModel, reason)
+	local session = activeSessions[tableModel]
+	if not session then return end
+	
+	print("[RoundService] Aborting round:", reason)
+	
+	-- Set abort flag
+	session.abortFlag = true
+	session.state = "ENDED"
+	
+	-- CRITICAL: Cleanup spin visuals if they exist (item + billboard)
+	if session.spinCleanup then
+		pcall(session.spinCleanup)
+		print("[RoundService] Spin cleanup called in AbortRound")
+		session.spinCleanup = nil
+	end
+	
+	-- Stop cinematic for all players (immediate)
+	local Remotes = game:GetService("ReplicatedStorage"):WaitForChild("Remotes")
+	local StopSpinCinematic = Remotes:FindFirstChild("StopSpinCinematic", 5)
+	if StopSpinCinematic then
+		for _, p in ipairs(session.players) do
+			if p and p.Parent then
+				StopSpinCinematic:FireClient(p, true) -- Immediate stop
+			end
+		end
+	end
+	
+	-- Cleanup round state
+	local remainingPlayers = {}
+	for _, p in ipairs(session.players) do
+		if p and p.Parent then
+			table.insert(remainingPlayers, p)
+			-- Do NOT call resetPlayerState here (which would eject)
+			-- Just disconnect leave handlers
+			if playerLeaveConnections[p] then
+				playerLeaveConnections[p]:Disconnect()
+				playerLeaveConnections[p] = nil
+			end
+		end
+	end
+	
+	-- Fire MatchEnd event
+	local MatchEndEvent = Remotes:FindFirstChild("MatchEnd", 5)
+	if MatchEndEvent then
+		for _, p in ipairs(remainingPlayers) do
+			MatchEndEvent:FireClient(p)
+		end
+	end
+	
+	-- Close UI for remaining players
+	local UIService = require(Core.UIService)
+	if UIService and UIService.CloseStageUI then
+		for _, p in ipairs(remainingPlayers) do
+			UIService.CloseStageUI(p)
+		end
+	end
+	
+	-- Respawn remaining players after 2 seconds (this is the ONLY exit - no eject first)
+	task.delay(2, function()
+		for _, p in ipairs(remainingPlayers) do
+			if p and p.Parent then
+				-- Respawn is the exit - this will remove them from seat
+				safeTeleport(p)
+				print("[RoundService] Respawned", p.Name, "after abort (no eject)")
+			end
+		end
+	end)
+	
+	activeSessions[tableModel] = nil
+	print("[RoundService] Abort cleanup ran for table", tableModel.Name)
 end
 
 return RoundService

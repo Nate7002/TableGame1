@@ -130,7 +130,8 @@ local function updateBillboard(billboard, item, config)
 end
 
 -- Public API
-function SpinService.SpinTable(tableModel, spinConfig)
+function SpinService.SpinTable(tableModel, spinConfig, stopFlag)
+	-- stopFlag: if set to true, spin will stop immediately
 	local spinDisplay = tableModel:FindFirstChild("SpinDisplay")
 	local itemAnchor = spinDisplay and spinDisplay:FindFirstChild("ItemAnchor")
 	local billboardAnchor = spinDisplay and spinDisplay:FindFirstChild("BillboardAnchor")
@@ -145,6 +146,23 @@ function SpinService.SpinTable(tableModel, spinConfig)
 	
 	-- Setup Billboard
 	local billboardTemplate = ResolvePath(ReplicatedStorage, SPIN_UI_PATH)
+	
+	-- Pre-setup rig template in ReplicatedStorage for client access
+	local RIG_PATH = "Assets/Cinematics/CamRig2"
+	local rigTemplate = ResolvePath(ReplicatedStorage, RIG_PATH)
+	if not rigTemplate then
+		-- Fallback or init logic if needed, but client needs this path
+		-- If it's in ServerStorage, we should move it or rely on manual setup
+		local serverRig = ResolvePath(ServerStorage, "Assets/Tables/TableTemplate/Cinematics/CamRig2")
+		if serverRig then
+			-- Ensure it exists in ReplicatedStorage
+			local targetFolder = ReplicatedStorage:FindFirstChild("Assets"):FindFirstChild("Cinematics") 
+			if not targetFolder then
+				-- This part is tricky at runtime; best to ensure it exists via edit.
+				-- For now, warn if missing.
+			end
+		end
+	end
 	local billboard
 	if billboardTemplate then
 		billboard = billboardTemplate:Clone()
@@ -231,6 +249,39 @@ function SpinService.SpinTable(tableModel, spinConfig)
 	local duration = 3.5
 	local startTime = os.clock()
 	local spinSpeed = 0.1 -- Initial delay
+	
+	-- Fire Cinematic IMMEDIATELY (no delays, same tick as spin start)
+	local Remotes = ReplicatedStorage:WaitForChild("Remotes")
+	local PlaySpinCinematic = Remotes:WaitForChild("PlaySpinCinematic")
+	
+	local seats = {}
+	for _, inst in ipairs(tableModel:GetDescendants()) do
+		if inst:IsA("Seat") or inst:IsA("VehicleSeat") then
+			table.insert(seats, inst)
+		end
+	end
+	print("[CINE] Seats found:", #seats)
+
+	local players = {}
+	local seenPlayers = {}
+	
+	for _, seat in ipairs(seats) do
+		if seat.Occupant then
+			local player = game.Players:GetPlayerFromCharacter(seat.Occupant.Parent)
+			if player and not seenPlayers[player.UserId] then
+				seenPlayers[player.UserId] = true
+				table.insert(players, player)
+			end
+		end
+	end
+	print("[CINE] Players found:", #players, "(deduped)")
+	
+	-- Fire IMMEDIATELY (no task.wait, no delays)
+	for _, p in ipairs(players) do
+		print("[CINE] FIRING", p.Name, 80453620398560, duration)
+		PlaySpinCinematic:FireClient(p, 80453620398560, duration, tableModel)
+	end
+	
 	local lastSpinTime = 0
 	
 	local currentModel = nil
@@ -240,6 +291,12 @@ function SpinService.SpinTable(tableModel, spinConfig)
 	
 	-- Spin Loop
 	while os.clock() - startTime < duration do
+		-- Check stop flag (for opponent leave during spin)
+		if stopFlag and stopFlag() then
+			print("[SpinService] Spin stopped due to abort flag")
+			break
+		end
+		
 		local now = os.clock()
 		
 		-- Update Item visually

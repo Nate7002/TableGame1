@@ -1,11 +1,147 @@
 local TweenService = game:GetService("TweenService")
+local Debris = game:GetService("Debris")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Lighting = game:GetService("Lighting")
+local Workspace = game:GetService("Workspace")
 
 local Theme = require(script.Parent.Parent.Theme)
 local CountdownWidget = require(script.Parent.CountdownWidget)
 local AnimatedBackgroundController = require(script.Parent.Parent.AnimatedBackgroundController)
+local FxService = require(script.Parent.Parent.FxService)
+local CinematicController = require(script.Parent.Parent.CinematicController)
+
+-- Safe requires for UI Animations
+local AnimationRuntime
+local Anim_Hover
+local Anim_Press
+local Anim_Ripple
+
+local function safeRequire(moduleInstance, name)
+	if not moduleInstance then
+		warn("[ChoicePopup] Missing module instance for: " .. tostring(name))
+		return nil
+	end
+	
+	local success, result = pcall(function()
+		return require(moduleInstance)
+	end)
+	
+	if success then
+		return result
+	else
+		warn("[ChoicePopup] Failed to load animation module: " .. tostring(name) .. " - " .. tostring(result))
+		return nil
+	end
+end
+
+-- Try to load UIAnimations by INSTANCE
+local success, result = pcall(function()
+	local UIAnimations = ReplicatedStorage:WaitForChild("UIAnimations", 2)
+	if UIAnimations then
+		local Modules = UIAnimations:WaitForChild("Modules", 2)
+		if Modules then
+			AnimationRuntime = safeRequire(Modules:WaitForChild("AnimationRuntime", 2), "AnimationRuntime")
+			Anim_Hover = safeRequire(Modules:WaitForChild("Frame_ScaleDown", 2), "Frame_ScaleDown")
+			Anim_Press = safeRequire(Modules:WaitForChild("ImageButton_PressDown", 2), "ImageButton_PressDown")
+			Anim_Ripple = safeRequire(Modules:WaitForChild("ImageButton_RippleClick", 2), "ImageButton_RippleClick")
+			
+			if AnimationRuntime then
+				print("[UIAnim] AnimationRuntime loaded OK")
+			end
+		end
+	end
+end)
+if not success then
+	warn("[ChoicePopup] UIAnimations folder missing or failed to load: " .. tostring(result))
+end
+
+if not AnimationRuntime then
+	warn("[ChoicePopup] AnimationRuntime missing -> animations disabled")
+end
 
 local ChoicePopup = {}
 ChoicePopup.__index = ChoicePopup
+
+-- Blur state for popup (NO FOV changes)
+local popupBlur = nil
+
+-- Helper: Apply blur when popup shows
+local function applyPopupEffects()
+	pcall(function()
+		local lighting = game:GetService("Lighting")
+		popupBlur = lighting:FindFirstChild("DoubleDownBlur")
+		if not popupBlur then
+			popupBlur = Instance.new("BlurEffect")
+			popupBlur.Name = "DoubleDownBlur"
+			popupBlur.Size = 0
+			popupBlur.Enabled = true
+			popupBlur.Parent = lighting
+		end
+		
+		popupBlur.Size = 16
+		-- NO FOV changes anywhere
+	end)
+end
+
+-- Helper: Remove blur when popup closes
+local function removePopupEffects()
+	pcall(function()
+		if popupBlur then
+			popupBlur.Size = 0
+			popupBlur.Enabled = false
+		end
+	end)
+end
+
+-- Helper: Play Sound
+local function playFxSound(soundName, parent)
+	local fxFolder = ReplicatedStorage:FindFirstChild("Assets") and ReplicatedStorage.Assets:FindFirstChild("FX")
+	if not fxFolder then return end
+	
+	local soundTemplate = fxFolder:FindFirstChild(soundName)
+	if soundTemplate then
+		local sound = soundTemplate:Clone()
+		sound.Parent = parent or workspace
+		sound:Play()
+		Debris:AddItem(sound, sound.TimeLength + 0.5)
+	end
+end
+
+-- Fallback animation helper if Runtime fails mult-reg or is missing
+local function applyFallbackAnimations(btn)
+	-- Store original size if not present
+	if not btn:GetAttribute("OrigScale") then
+		btn:SetAttribute("OrigScale", 1) 
+	end
+	
+	-- Hover Tween
+	btn.MouseEnter:Connect(function()
+		local t = TweenService:Create(btn, TweenInfo.new(0.15, Enum.EasingStyle.Quad), {
+			Size = UDim2.fromScale(0.92, 0.92)
+		})
+		t:Play()
+	end)
+	
+	btn.MouseLeave:Connect(function()
+		local t = TweenService:Create(btn, TweenInfo.new(0.15, Enum.EasingStyle.Quad), {
+			Size = UDim2.fromScale(1, 1)
+		})
+		t:Play()
+	end)
+	
+	-- Press Tween (One-shot)
+	btn.Activated:Connect(function()
+		local t1 = TweenService:Create(btn, TweenInfo.new(0.05, Enum.EasingStyle.Quad), {
+			Size = UDim2.fromScale(0.96, 0.96)
+		})
+		t1:Play()
+		t1.Completed:Wait()
+		local t2 = TweenService:Create(btn, TweenInfo.new(0.1, Enum.EasingStyle.Quad), {
+			Size = UDim2.fromScale(1, 1)
+		})
+		t2:Play()
+	end)
+end
 
 function ChoicePopup.new(parentGui)
 	local self = setmetatable({}, ChoicePopup)
@@ -104,38 +240,84 @@ function ChoicePopup.new(parentGui)
 	-- Timer Widget
 	self._countdown = CountdownWidget.new(frame)
 	self._countdown:SetPosition(UDim2.new(1, -20, 0, 20), Vector2.new(1, 0))
-	-- Note: CountdownWidget ZIndex needs to be set internally or here?
-	-- It's a class. We should update CountdownWidget too.
+	
+	-- Status Label (for "Waiting on opponent..." state)
+	local statusLabel = Instance.new("TextLabel")
+	statusLabel.Name = "StatusLabel"
+	statusLabel.BackgroundTransparency = 1
+	statusLabel.Size = UDim2.new(1, -40, 0, 40)
+	statusLabel.Position = UDim2.new(0, 20, 0, 120)
+	statusLabel.Font = Theme.Font.Body
+	statusLabel.TextColor3 = Theme.Colors.Text
+	statusLabel.TextSize = Theme.Sizes.TextBody
+	statusLabel.TextWrapped = true
+	statusLabel.TextXAlignment = Enum.TextXAlignment.Center
+	statusLabel.TextYAlignment = Enum.TextYAlignment.Center
+	statusLabel.ZIndex = 25
+	statusLabel.Visible = false
+	statusLabel.Parent = frame
+	self._statusLabel = statusLabel
+	
+	local statusStroke = Instance.new("UIStroke")
+	statusStroke.Color = Theme.Stroke.Color
+	statusStroke.Transparency = Theme.Stroke.Transparency
+	statusStroke.Thickness = Theme.Stroke.Thickness
+	statusStroke.Parent = statusLabel
 	
 	self._connections = {}
 	self._isClosing = false
+	self._isWaiting = false
 	self._currentTimerId = 0
 	
 	return self
 end
 
 function ChoicePopup:Show(payload, onResponse)
-	self:Hide() -- Reset if open
+	print("[UI] Show called at", os.clock())
+	
+	-- Reset state but DON'T call Hide() (which destroys overlay)
+	-- Only reset closing/waiting flags
 	self._isClosing = false
+	self._isWaiting = false
 	self._overlay.Visible = true
 	
-	-- Attach Animated Background
-	local tint = AnimatedBackgroundController.GetTintColor(payload.rarity or "Common")
-	if self._bgCleanup then self._bgCleanup() end
+	-- Hide status label initially
+	if self._statusLabel then
+		self._statusLabel.Visible = false
+	end
 	
-	-- Attach to _overlay (Full Screen) instead of _frame (Card)
-	self._bgCleanup = AnimatedBackgroundController.AttachAnimatedBackground(self._overlay, {
-		speed = 0.05,
-		tintColor = tint
-	})
+	-- Apply blur when popup appears (not during cinematic)
+	applyPopupEffects()
+	
+	-- Attach Animated Background (only if not already attached)
+	local tint = AnimatedBackgroundController.GetTintColor(payload.rarity or "Common")
+	if not self._bgCleanup then
+		-- First time: create background
+		self._bgCleanup = AnimatedBackgroundController.AttachAnimatedBackground(self._overlay, {
+			speed = 0.05,
+			tintColor = tint
+		})
+	else
+		-- Update existing background tint if needed (reuse overlay)
+		-- Background controller should handle tint updates internally
+		-- If it doesn't, we'll need to update it, but for now just reuse
+	end
 	
 	-- Update Content
 	self._titleLabel.Text = payload.title or "Choice"
 	self._descLabel.Text = payload.description or "Please select an option."
 	
+	-- Play Popup Sound (Server Controlled)
+	if payload.sfx then
+		FxService.Play(payload.sfx)
+	end
+	
 	-- Clear Buttons
 	for _, child in ipairs(self._optionsContainer:GetChildren()) do
-		if child:IsA("TextButton") then child:Destroy() end
+		if child:IsA("Frame") or child:IsA("GuiObject") then
+			if child:IsA("UIListLayout") then continue end
+			child:Destroy()
+		end
 	end
 	
 	-- Create Buttons
@@ -165,23 +347,42 @@ function ChoicePopup:Show(payload, onResponse)
 end
 
 function ChoicePopup:CreateButton(option, count, onResponse)
-	local btn = Instance.new("TextButton")
+	-- Wrapper for UIListLayout to hold space
+	local wrapper = Instance.new("Frame")
+	wrapper.Name = "Wrapper_" .. option.id
+	wrapper.BackgroundTransparency = 1
+	wrapper.ZIndex = 20
+	wrapper.ClipsDescendants = false -- Ensure button scale/ripple isn't aggressively clipped
+	if count then
+		wrapper.Size = UDim2.new(1/count, -10, 1, 0)
+	else
+		wrapper.Size = UDim2.new(0, 150, 1, 0)
+	end
+	wrapper.Parent = self._optionsContainer
+
+	-- ImageButton Root
+	local btn = Instance.new("ImageButton")
 	btn.Name = "Option_" .. option.id
 	btn.BackgroundColor3 = Theme.Colors.Secondary
-	btn.ZIndex = 20 -- Button Layer
+	btn.BackgroundTransparency = 0
+	btn.AutoButtonColor = false -- We handle colors manually
+	btn.Image = "" -- Blank for now
+	btn.ScaleType = Enum.ScaleType.Stretch
+	btn.ZIndex = 20
+	btn.ClipsDescendants = true -- Required for Ripple containment
 	
-	if count then
-		btn.Size = UDim2.new(1/count, -10, 1, 0)
-	else
-		btn.Size = UDim2.new(0, 150, 1, 0)
-	end
+	-- FIX: Anchor Center for proper scaling animations
+	btn.AnchorPoint = Vector2.new(0.5, 0.5)
+	btn.Position = UDim2.fromScale(0.5, 0.5)
+	btn.Size = UDim2.fromScale(1, 1)
 	
-	btn.Font = Theme.Font.Header
-	btn.Text = option.label
-	btn.TextColor3 = Theme.Colors.Text
-	btn.TextSize = Theme.Sizes.TextBody
-	btn.AutoButtonColor = true
-	btn.Parent = self._optionsContainer
+	-- Store original size attributes for dynamic animations
+	btn:SetAttribute("OrigXScale", 1)
+	btn:SetAttribute("OrigXOffset", 0)
+	btn:SetAttribute("OrigYScale", 1)
+	btn:SetAttribute("OrigYOffset", 0)
+	
+	btn.Parent = wrapper
 	
 	local btnStroke = Instance.new("UIStroke")
 	btnStroke.Color = Theme.Stroke.Color
@@ -191,17 +392,39 @@ function ChoicePopup:CreateButton(option, count, onResponse)
 	
 	Instance.new("UICorner", btn).CornerRadius = Theme.Sizes.CornerRadius
 	
+	-- Text Label
+	local label = Instance.new("TextLabel")
+	label.Name = "Label"
+	label.BackgroundTransparency = 1
+	label.Size = UDim2.fromScale(1, 1)
+	label.Position = UDim2.fromScale(0.5, 0.5)
+	label.AnchorPoint = Vector2.new(0.5, 0.5)
+	label.Font = Theme.Font.Header
+	label.Text = option.label
+	label.TextColor3 = Theme.Colors.Text
+	label.TextSize = Theme.Sizes.TextBody
+	label.TextScaled = false
+	label.ZIndex = 30 -- Ensure label is above ripple (ripple will be ZIndex + 2 = 22, so 30 is safe)
+	label.Parent = btn
+	
 	-- Interaction
-	local connClick = btn.MouseButton1Click:Connect(function()
-		if self._isClosing then return end
-		self:Hide()
+	local connClick = btn.Activated:Connect(function() -- Activated is better for all devices
+		if self._isClosing or self._isWaiting then return end
+		
+		print("[UI] Player clicked option:", option.id, "at", os.clock())
+		
+		-- Send choice to server
 		if onResponse then onResponse(option.id) end
+		
+		-- Show waiting state instead of closing
+		self:ShowWaitingState(option.label)
 	end)
 	table.insert(self._connections, connClick)
 	
-	-- Hover
+	-- Hover Sounds & Color
 	local connEnter = btn.MouseEnter:Connect(function()
 		btn.BackgroundColor3 = Theme.Colors.Accent
+		playFxSound("ButtonClick", btn) -- Swap per request (Click sound on hover)
 	end)
 	table.insert(self._connections, connEnter)
 	
@@ -209,6 +432,88 @@ function ChoicePopup:CreateButton(option, count, onResponse)
 		btn.BackgroundColor3 = Theme.Colors.Secondary
 	end)
 	table.insert(self._connections, connLeave)
+	
+	-- Animation Logic (Try Runtime, Fallback to Manual)
+	local animsRegistered = false
+	
+	if AnimationRuntime then
+		-- Register each animation separately (AnimationRuntime.run supports one config at a time)
+		local boundCount = 0
+		
+		-- Hover animation (ScaleDown)
+		if Anim_Hover then
+			local cfg = table.clone(Anim_Hover)
+			cfg.prop = "Size"
+			cfg.val = UDim2.fromScale(0.92, 0.92)
+			-- Config already has event = "hover", keep it
+			local success, err = pcall(function()
+				AnimationRuntime.run(btn, cfg)
+			end)
+			if success then
+				boundCount = boundCount + 1
+			else
+				warn("[UIAnim] Hover animation failed:", err)
+			end
+		end
+		
+		-- Press animation (PressDown - override to use Size instead of Position)
+		if Anim_Press then
+			local cfg = table.clone(Anim_Press)
+			cfg.prop = "Size" -- Override from Position to Size
+			cfg.val = UDim2.fromScale(0.96, 0.96)
+			cfg.reset = true -- Keep reset behavior
+			cfg.resetTime = 0.1
+			-- Config already has event = "click", keep it
+			local success, err = pcall(function()
+				AnimationRuntime.run(btn, cfg)
+			end)
+			if success then
+				boundCount = boundCount + 1
+			else
+				warn("[UIAnim] Press animation failed:", err)
+			end
+		end
+		
+		-- Ripple animation (RippleClick)
+		if Anim_Ripple then
+			local cfg = table.clone(Anim_Ripple)
+			-- Config already has event = "click" and prop = "Ripple", keep them
+			local success, err = pcall(function()
+				AnimationRuntime.run(btn, cfg)
+			end)
+			if success then
+				boundCount = boundCount + 1
+			else
+				warn("[UIAnim] Ripple animation failed:", err)
+			end
+		end
+		
+		if boundCount > 0 then
+			animsRegistered = true
+			print("[UIAnim] bound", boundCount, "animations (hover/press/ripple) to", btn.Name)
+		else
+			warn("[UIAnim] No animations bound to", btn.Name)
+		end
+
+		-- ZIndex fix for ripple (heuristic)
+		if Anim_Ripple then
+			task.delay(0.05, function()
+				if not btn or not btn.Parent then return end
+				for _, d in ipairs(btn:GetDescendants()) do
+					if d:IsA("Frame") and d.ZIndex < 25 then
+						d.ZIndex = 25
+						for _, dd in ipairs(d:GetDescendants()) do
+							if dd:IsA("GuiObject") then dd.ZIndex = 25 end
+						end
+					end
+				end
+			end)
+		end
+	end
+	
+	if not animsRegistered then
+		applyFallbackAnimations(btn)
+	end
 end
 
 function ChoicePopup:StartSyncedTimer(endTime, onResponse, timerId)
@@ -253,41 +558,66 @@ function ChoicePopup:StartTimer(seconds, onResponse, timerId)
 end
 
 function ChoicePopup:AnimateIn()
-	local info = TweenInfo.new(0.3, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
-	
-	-- Strict Ease-In rule for User (but 'Back' style usually needs Out to look right?)
-	-- User requirement: "ALL UI tweens must be Ease-In only (EasingDirection.In). NO ease-outs anywhere."
-	-- NOTE: EasingDirection.In on 'Back' style starts with the overshoot (anticipation), 
-	-- whereas EasingDirection.Out ends with the overshoot.
-	-- If user insists on Ease-In only, 'Back' might feel weird if used for entrance?
-	-- Let's switch to 'Quad' or 'Expo' with In for entrance? 
-	-- Actually, 'In' entrance usually means it starts slow and accelerates.
-	-- Most UI entrances are 'Out' (start fast, decelerate).
-	-- User specified: "ALL UI tweens must be Ease-In only... NO ease-outs anywhere."
-	-- This is a very specific stylistic choice (snappy/aggressive start?).
-	-- I will follow the instruction strictly.
-	
-	local strictInfo = TweenInfo.new(0.3, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+	local info = TweenInfo.new(0.3, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
 	
 	self._overlay.BackgroundTransparency = 1
-	local overlayTween = TweenService:Create(self._overlay, strictInfo, { BackgroundTransparency = 0.55 }) -- Dimmer 0.55
+	local overlayTween = TweenService:Create(self._overlay, info, { BackgroundTransparency = 0.55 })
 	overlayTween:Play()
 	
 	self._frame.Size = UDim2.fromOffset(360, 225)
 	self._frame.BackgroundTransparency = 1
 	
-	local frameTween = TweenService:Create(self._frame, strictInfo, {
+	local frameTween = TweenService:Create(self._frame, info, {
 		Size = self._originalSize,
 		BackgroundTransparency = 0 -- BasePanel handles color, this is container
 	})
 	frameTween:Play()
 end
 
+function ChoicePopup:ShowWaitingState(selectedOption)
+	if self._isWaiting or self._isClosing then return end
+	self._isWaiting = true
+	
+	print("[UI] ShowWaitingState called at", os.clock())
+	
+	-- Disable all buttons
+	for _, child in ipairs(self._optionsContainer:GetChildren()) do
+		if child:IsA("Frame") then
+			local btn = child:FindFirstChildOfClass("ImageButton")
+			if btn then
+				btn.Active = false
+				btn.AutoButtonColor = false
+				-- Dim the button
+				btn.BackgroundTransparency = 0.5
+			end
+		end
+	end
+	
+	-- Show waiting message
+	if self._statusLabel then
+		self._statusLabel.Text = "Waiting on opponent..."
+		self._statusLabel.Visible = true
+	end
+	
+	-- Keep countdown visible (always visible, even after click)
+	-- Countdown continues updating until round resolves
+	if self._countdown then
+		-- Ensure countdown stays visible
+		self._countdown:SetVisible(true)
+	end
+end
+
 function ChoicePopup:Hide()
 	if self._isClosing then return end
+	print("[UI] Hide() called at", os.clock())
 	self._isClosing = true
+	self._isWaiting = false
 	self._currentTimerId += 1 -- Invalidates timers
 	
+	-- Remove blur when popup closes
+	removePopupEffects()
+	
+	-- Cleanup background only when round ends (not between stages)
 	if self._bgCleanup then
 		self._bgCleanup()
 		self._bgCleanup = nil
@@ -299,28 +629,9 @@ function ChoicePopup:Hide()
 	end
 	self._connections = {}
 	
-	-- Animate Out
-	local info = TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
-	
-	local overlayTween = TweenService:Create(self._overlay, info, { BackgroundTransparency = 1 })
-	overlayTween:Play()
-	
-	local frameTween = TweenService:Create(self._frame, info, {
-		Size = UDim2.fromOffset(360, 225),
-		BackgroundTransparency = 1
-	})
-	frameTween:Play()
-	
-	frameTween.Completed:Connect(function()
-		if self._isClosing then -- Ensure didn't reopen
-			self._overlay.Visible = false
-			-- Cleanup background just in case
-			if self._bgCleanup then
-				self._bgCleanup()
-				self._bgCleanup = nil
-			end
-		end
-	end)
+	-- Close immediately (no animation delay on round resolve)
+	self._overlay.Visible = false
+	print("[UI] overlay.Visible set to false at", os.clock())
 end
 
 function ChoicePopup:Destroy()
@@ -331,4 +642,3 @@ function ChoicePopup:Destroy()
 end
 
 return ChoicePopup
-

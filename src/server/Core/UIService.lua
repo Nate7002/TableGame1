@@ -30,13 +30,37 @@ local function getRemotes()
 	return {
 		PromptChoice = ensureEvent("PromptChoice"),
 		PromptResponse = ensureEvent("PromptResponse"),
-		Notify = ensureEvent("Notify")
+		Notify = ensureEvent("Notify"),
+		UIFxEvent = ensureEvent("UIFxEvent"), -- Added for SFX
+		PlaySpinCinematic = ensureEvent("PlaySpinCinematic"), -- Added for Cinematic
+		StopSpinCinematic = ensureEvent("StopSpinCinematic"), -- Added for Cinematic Release
+		CloseStageUI = ensureEvent("CloseStageUI"), -- Added for immediate UI close on resolve
+		MatchStart = ensureEvent("MatchStart"), -- Added for match start signal
+		MatchEnd = ensureEvent("MatchEnd"), -- Added for match end signal
+		OpponentLeft = ensureEvent("OpponentLeft"), -- Added for player leave notification
+		OpponentLeftToast = ensureEvent("OpponentLeftToast"), -- Added for toast during spin
+		OpponentLeftCard = ensureEvent("OpponentLeftCard") -- Added for card message during stage
 	}
 end
 
 local Remotes = getRemotes()
 
 -- Public API
+function UIService.PlayCinematic(player, animId, duration, tableModel)
+	if not (player and player.Parent) then return end
+	Remotes.PlaySpinCinematic:FireClient(player, animId, duration, tableModel)
+end
+
+function UIService.StopCinematic(player)
+	if not (player and player.Parent) then return end
+	Remotes.StopSpinCinematic:FireClient(player)
+end
+
+function UIService.PlayFx(player, soundName)
+	if not (player and player.Parent) then return end
+	Remotes.UIFxEvent:FireClient(player, soundName)
+end
+
 function UIService.PromptChoice(player, payload)
 	if not (player and player.Parent) then return nil end
 	
@@ -73,6 +97,18 @@ end
 function UIService.Notify(player, text, duration)
 	if not (player and player.Parent) then return end
 	Remotes.Notify:FireClient(player, text, duration)
+end
+
+function UIService.CloseStageUI(player)
+	if not (player and player.Parent) then return end
+	print("[UIService] CloseStageUI firing to", player.Name, "at", os.clock())
+	Remotes.CloseStageUI:FireClient(player)
+end
+
+function UIService.NotifyOpponentLeft(player, tableModel)
+	if not (player and player.Parent) then return end
+	print("[UIService] Notifying", player.Name, "that opponent left")
+	Remotes.OpponentLeft:FireClient(player, tableModel)
 end
 
 -- Internal Handler
