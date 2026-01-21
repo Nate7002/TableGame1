@@ -1,6 +1,4 @@
-local Players = game:GetService("Players")
 local Workspace = game:GetService("Workspace")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local PromptController = {}
 
@@ -57,24 +55,4 @@ function PromptController.EnablePrompts()
 	promptStates = {}
 end
 
--- Listen for match start/end signals
-local Remotes = ReplicatedStorage:WaitForChild("Remotes", 5)
-if Remotes then
-	local MatchStartEvent = Remotes:FindFirstChild("MatchStart", 5)
-	local MatchEndEvent = Remotes:FindFirstChild("MatchEnd", 5)
-	
-	if MatchStartEvent then
-		MatchStartEvent.OnClientEvent:Connect(function()
-			PromptController.DisablePrompts()
-		end)
-	end
-	
-	if MatchEndEvent then
-		MatchEndEvent.OnClientEvent:Connect(function()
-			PromptController.EnablePrompts()
-		end)
-	end
-end
-
 return PromptController
-

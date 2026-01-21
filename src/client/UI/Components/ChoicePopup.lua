@@ -94,14 +94,15 @@ local function removePopupEffects()
 end
 
 -- Helper: Play Sound
-local function playFxSound(soundName, parent)
+local function playFxSound(soundName)
 	local fxFolder = ReplicatedStorage:FindFirstChild("Assets") and ReplicatedStorage.Assets:FindFirstChild("FX")
 	if not fxFolder then return end
 	
 	local soundTemplate = fxFolder:FindFirstChild(soundName)
-	if soundTemplate then
+	if soundTemplate and soundTemplate:IsA("Sound") then
 		local sound = soundTemplate:Clone()
-		sound.Parent = parent or workspace
+		sound.Parent = game:GetService("SoundService") -- Preferred parent for global UI sounds
+		sound.TimePosition = 0
 		sound:Play()
 		Debris:AddItem(sound, sound.TimeLength + 0.5)
 	end
@@ -411,6 +412,7 @@ function ChoicePopup:CreateButton(option, count, onResponse)
 	local connClick = btn.Activated:Connect(function() -- Activated is better for all devices
 		if self._isClosing or self._isWaiting then return end
 		
+		playFxSound("ButtonClick") -- Play click sound
 		print("[UI] Player clicked option:", option.id, "at", os.clock())
 		
 		-- Send choice to server
@@ -424,7 +426,7 @@ function ChoicePopup:CreateButton(option, count, onResponse)
 	-- Hover Sounds & Color
 	local connEnter = btn.MouseEnter:Connect(function()
 		btn.BackgroundColor3 = Theme.Colors.Accent
-		playFxSound("ButtonClick", btn) -- Swap per request (Click sound on hover)
+		playFxSound("ButtonHover") -- Play hover sound
 	end)
 	table.insert(self._connections, connEnter)
 	

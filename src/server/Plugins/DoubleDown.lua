@@ -128,6 +128,24 @@ function DoubleDown.Run(context)
 	local phase1Sfx = "NotificationSound"
 	if isJackpot or isEpicPlus then
 		phase1Sfx = "JackpotSound"
+		
+		-- GLOBAL JACKPOT AUDIO
+		if isJackpot then
+			task.spawn(function()
+				local Debris = game:GetService("Debris")
+				local SoundService = game:GetService("SoundService")
+				local ReplicatedStorage = game:GetService("ReplicatedStorage")
+				local fx = ReplicatedStorage:FindFirstChild("Assets") and ReplicatedStorage.Assets:FindFirstChild("FX") and ReplicatedStorage.Assets.FX:FindFirstChild("JackpotSound")
+				
+				if fx and fx:IsA("Sound") then
+					local clone = fx:Clone()
+					clone.Parent = SoundService
+					clone:Play()
+					Debris:AddItem(clone, (clone.TimeLength > 0 and clone.TimeLength or 3) + 0.5)
+					print("[DoubleDown] GLOBAL JACKPOT SOUND FIRED")
+				end
+			end)
+		end
 	end
 	
 	print("[DoubleDown] Starting Stage 1... at", os.clock())

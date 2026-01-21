@@ -24,6 +24,7 @@ local Toast = safeRequire(Components.Toast, "Toast")
 local FxService = safeRequire(UI.FxService, "FxService")
 local CinematicController = safeRequire(UI.CinematicController, "CinematicController")
 local PromptController = safeRequire(UI.PromptController, "PromptController")
+local WorldSpinUIController = safeRequire(UI.WorldSpinUIController, "WorldSpinUIController")
 
 -- Remotes (with safe waits)
 print("[CLIENT] Waiting for Remotes...")
@@ -33,6 +34,8 @@ print("[CLIENT] Remotes found")
 local PromptChoiceEvent = Remotes:WaitForChild("PromptChoice")
 local PromptResponseEvent = Remotes:WaitForChild("PromptResponse")
 local NotifyEvent = Remotes:WaitForChild("Notify")
+local MatchStartEvent = Remotes:WaitForChild("MatchStart", 5)
+local MatchEndEvent = Remotes:WaitForChild("MatchEnd", 5)
 local UIFxEvent = Remotes:WaitForChild("UIFxEvent", 5) -- Optional wait
 local StopSpinCinematic = Remotes:WaitForChild("StopSpinCinematic", 5)
 local CloseStageUI = Remotes:WaitForChild("CloseStageUI", 5) -- Optional wait
@@ -90,6 +93,18 @@ local function getScreenGui()
 	return gui
 end
 
+-- Helper: Normalize Table Key
+local function NormalizeTableKey(v)
+	if typeof(v) == "Instance" then
+		return v.Name
+	elseif typeof(v) == "string" then
+		return v
+	elseif typeof(v) == "number" then
+		return string.format("Table_%02d", v)
+	end
+	return nil
+end
+
 -- Handlers
 local function onPromptChoice(payload)
 	print("[CLIENT] PromptChoice RECEIVED")
@@ -117,7 +132,28 @@ local function onNotify(text, duration)
 	end
 end
 
+local MatchStartEvent = Remotes:FindFirstChild("MatchStart", 5)
+local MatchEndEvent = Remotes:FindFirstChild("MatchEnd", 5)
+
 -- Listeners (with logging)
+if MatchStartEvent then
+	MatchStartEvent.OnClientEvent:Connect(function()
+		print("[CLIENT] MatchStart RECEIVED")
+		if PromptController then
+			PromptController.DisablePrompts()
+		end
+	end)
+end
+
+if MatchEndEvent then
+	MatchEndEvent.OnClientEvent:Connect(function()
+		print("[CLIENT] MatchEnd RECEIVED")
+		if PromptController then
+			PromptController.EnablePrompts()
+		end
+	end)
+end
+
 if PromptChoiceEvent then
 	PromptChoiceEvent.OnClientEvent:Connect(onPromptChoice)
 	print("[CLIENT] Hooked PromptChoice")
@@ -156,6 +192,13 @@ if PlaySpinCinematic and CinematicController then
 				warn("[CLIENT] CinematicController.Play error:", err)
 			end
 		end
+		-- Hide other world UIs
+		if WorldSpinUIController then
+			local key = NormalizeTableKey(tableModel)
+			if key then
+				WorldSpinUIController.SetInMatch(true, key)
+			end
+		end
 	end)
 	print("[CLIENT] Hooked PlaySpinCinematic (single listener)")
 else
@@ -178,6 +221,14 @@ if StopSpinCinematic and CinematicController then
 				warn("[CLIENT] CinematicController.Stop error:", err)
 			end
 		end
+		-- Ensure prompts are enabled if match ends abruptly via StopSpinCinematic (fallback)
+		if PromptController and immediate then
+			PromptController.EnablePrompts()
+		end
+		-- Restore world UIs on stop
+		if WorldSpinUIController then
+			WorldSpinUIController.SetInMatch(false, nil)
+		end
 	end)
 	print("[CLIENT] Hooked StopSpinCinematic (single listener)")
 else
@@ -194,9 +245,8 @@ if CloseStageUI then
 		print("[CLIENT] CloseStageUI RECEIVED at", os.clock())
 		if popupComponent and popupComponent.Hide then
 			popupComponent:Hide()
-		else
-			warn("[CLIENT] popupComponent not available for CloseStageUI")
 		end
+		-- Safe no-op if component missing or already hidden
 	end)
 	print("[CLIENT] Hooked CloseStageUI")
 else
@@ -206,12 +256,20 @@ end
 if OpponentLeftToast then
 	OpponentLeftToast.OnClientEvent:Connect(function(message, seconds)
 		print("[CLIENT] OpponentLeftToast RECEIVED:", message)
+		getScreenGui() -- Ensure GUI exists even if no Stage UI ever opened
+		
 		-- Show toast notification
 		if toastComponent and toastComponent.Show then
 			toastComponent:Show(message, seconds or 2)
 		else
 			warn("[CLIENT] toastComponent not available for OpponentLeftToast")
 		end
+		
+		-- Cleanup UI/Cinematic/Prompts (Idempotent safety)
+		if popupComponent and popupComponent.Hide then popupComponent:Hide() end
+		if CinematicController and CinematicController.Stop then pcall(function() CinematicController.Stop(true) end) end
+		if PromptController then PromptController.EnablePrompts() end
+		if WorldSpinUIController then WorldSpinUIController.SetInMatch(false, nil) end
 	end)
 	print("[CLIENT] Hooked OpponentLeftToast")
 else
@@ -249,6 +307,10 @@ if OpponentLeftCard then
 					if popupComponent and not popupComponent._isClosing then
 						popupComponent:Hide()
 					end
+					-- Ensure final cleanup
+					if CinematicController and CinematicController.Stop then pcall(function() CinematicController.Stop(true) end) end
+					if PromptController then PromptController.EnablePrompts() end
+					if WorldSpinUIController then WorldSpinUIController.SetInMatch(false, nil) end
 				end)
 			end
 		else
@@ -276,6 +338,11 @@ else
 	else
 		warn("[CLIENT] CinematicController has no Init method")
 	end
+end
+
+if WorldSpinUIController and WorldSpinUIController.Init then
+	WorldSpinUIController.Init()
+	print("[CLIENT] WorldSpinUIController.Init OK")
 end
 
 -- BOOT COMPLETE MARKER

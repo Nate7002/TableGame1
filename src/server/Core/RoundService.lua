@@ -130,7 +130,8 @@ function RoundService.StartRound(tableModel, players)
 		spinStopFlag = false,
 		abortFlag = false,
 		spinCleanup = nil, -- Store cleanup function from SpinService
-		leaveHandled = false -- Prevent duplicate leave handling
+		leaveHandled = false, -- Prevent duplicate leave handling
+		ending = false -- HARDENED: Prevent double-end paths
 	}
 	
 	-- Fire MatchStart event to clients (for prompt disabling)
@@ -262,6 +263,13 @@ function RoundService.StartRound(tableModel, players)
 			print(string.format("[RoundService] DoubleDown Result: Outcome=%s, Reward=%d", data.outcome or "nil", data.reward or 0))
 			print("[RoundService] Outcome computed at", os.clock())
 			
+			-- HARDENED ENDING GUARD
+			if session.ending then
+				print("[RoundService] Skipping normal finish (session ending via other path)")
+				return
+			end
+			session.ending = true
+			
 			-- Logic:
 			-- Parse winners
 			local winners = data.winners or {}
@@ -392,12 +400,13 @@ function HandleOpponentLeave(tableModel, leaverUserId, currentState)
 	local session = activeSessions[tableModel]
 	if not session then return end
 	
-	-- Prevent duplicate handling
-	if session.leaveHandled then
-		print("[RoundService] Leave already handled for", tableModel.Name)
+	-- HARDENED: Prevent duplicate leave handling OR handling if match already ending
+	if session.leaveHandled or session.ending then
+		print("[RoundService] Leave already handled or match ending for", tableModel.Name)
 		return
 	end
 	session.leaveHandled = true
+	session.ending = true -- Mark as ending here too
 	
 	-- Set abort flag to stop any running loops
 	session.abortFlag = true
@@ -456,8 +465,8 @@ function HandleOpponentLeave(tableModel, leaverUserId, currentState)
 		end
 	end
 	
-	-- Schedule abort after 2 seconds (will respawn remaining players)
-	task.delay(2, function()
+	-- Schedule abort IMMEDIATELY (concurrent cleanup)
+	task.spawn(function()
 		AbortRound(tableModel, "Opponent left during " .. (currentState or "unknown"))
 	end)
 end
@@ -466,6 +475,12 @@ end
 function AbortRound(tableModel, reason)
 	local session = activeSessions[tableModel]
 	if not session then return end
+	
+	-- HARDENED: If already ending (via HandleOpponentLeave) this is fine as it's the chain
+	-- But if called directly, we set ending=true
+	if not session.ending then
+		session.ending = true
+	end
 	
 	print("[RoundService] Aborting round:", reason)
 	
@@ -521,13 +536,13 @@ function AbortRound(tableModel, reason)
 		end
 	end
 	
-	-- Respawn remaining players after 2 seconds (this is the ONLY exit - no eject first)
-	task.delay(2, function()
+	-- Respawn remaining players IMMEDIATELY (this is the ONLY exit - no eject first)
+	task.spawn(function()
 		for _, p in ipairs(remainingPlayers) do
 			if p and p.Parent then
 				-- Respawn is the exit - this will remove them from seat
 				safeTeleport(p)
-				print("[RoundService] Respawned", p.Name, "after abort (no eject)")
+				print("[RoundService] Respawned", p.Name, "after abort (immediate)")
 			end
 		end
 	end)

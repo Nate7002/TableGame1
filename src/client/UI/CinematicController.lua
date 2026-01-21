@@ -81,6 +81,41 @@ function CinematicController.Init()
 	-- UIController is now the only listener to avoid double-start
 	-- CinematicController is a pure module: Play() and Stop() are called directly
 	print("[CINE] Init() called - remotes handled by UIController")
+	
+	-- Warmup immediately on init
+	task.spawn(function()
+		CinematicController.Warmup()
+	end)
+end
+
+function CinematicController.Warmup()
+	local assets = ReplicatedStorage:FindFirstChild("Assets")
+	if not assets then return end
+	
+	-- Preload Spin Anim
+	local ContentProvider = game:GetService("ContentProvider")
+	local spinAnimId = "rbxassetid://80453620398560"
+	local anim = Instance.new("Animation")
+	anim.AnimationId = spinAnimId
+	
+	pcall(function()
+		ContentProvider:PreloadAsync({anim})
+		print("[CINE] Warmup: Animation preloaded")
+	end)
+	
+	-- Dummy load to warm Animator (optional but good)
+	local tempModel = Instance.new("Model")
+	local tempAnimController = Instance.new("AnimationController", tempModel)
+	local tempAnimator = Instance.new("Animator", tempAnimController)
+	tempModel.Parent = workspace
+	
+	pcall(function()
+		local track = tempAnimator:LoadAnimation(anim)
+		track:Play()
+		track:Stop()
+	end)
+	tempModel:Destroy()
+	print("[CINE] Warmup complete")
 end
 
 function CinematicController.Play(animId, duration, tableModel)
