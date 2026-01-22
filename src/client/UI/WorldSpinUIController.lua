@@ -5,7 +5,7 @@ local RunService = game:GetService("RunService")
 local WorldSpinUIController = {}
 
 -- Constants
-local NEAR_DISTANCE = 35
+local NEAR_DISTANCE = 45
 local UPDATE_INTERVAL = 0.25
 
 -- State
@@ -41,6 +41,25 @@ local function GetTableFromGui(gui)
 		current = current.Parent
 	end
 	return nil
+end
+
+local function getPlayerPos()
+	local player = Players.LocalPlayer
+	local char = player and player.Character
+	local hrp = char and char:FindFirstChild("HumanoidRootPart")
+	return hrp and hrp.Position or nil
+end
+
+local function getAnchorPos(tableModel)
+	local spinDisplay = tableModel:FindFirstChild("SpinDisplay")
+	local anchor = spinDisplay and spinDisplay:FindFirstChild("BillboardAnchor")
+	if anchor and anchor:IsA("BasePart") then
+		return anchor.Position
+	end
+	if tableModel.PrimaryPart then
+		return tableModel.PrimaryPart.Position
+	end
+	return tableModel:GetPivot().Position
 end
 
 -- Helper: Find all valid table models
@@ -80,15 +99,15 @@ local function GetTables()
 	return tables
 end
 
--- Helper: Toggle UI visibility
-local function SetTableSpinUIEnabled(tableModel, enabled)
+-- Helper: Toggle runtime billboard visibility (only SpinLabelBillboard_Runtime)
+local function SetTableRuntimeBillboardEnabled(tableModel, enabled)
 	local spinDisplay = tableModel:FindFirstChild("SpinDisplay")
 	if not spinDisplay then return end
 	
 	for _, descendant in ipairs(spinDisplay:GetDescendants()) do
-		if descendant:IsA("BillboardGui") or descendant:IsA("SurfaceGui") then
+		if IsSpinRuntimeBillboard(descendant) then
 			-- If disabling during match (and it's not ours), cache state
-			if not enabled and isInMatch and IsSpinRuntimeBillboard(descendant) then
+			if not enabled and isInMatch then
 				if originalEnabled[descendant] == nil then
 					originalEnabled[descendant] = descendant.Enabled
 				end
@@ -98,40 +117,55 @@ local function SetTableSpinUIEnabled(tableModel, enabled)
 	end
 end
 
--- Main Refresh Logic
-function WorldSpinUIController.Refresh()
-	local player = Players.LocalPlayer
-	local char = player.Character
-	local hrp = char and char:FindFirstChild("HumanoidRootPart")
-	
+local function UpdateVisibility()
 	local tables = GetTables()
-	
+
 	if isInMatch then
-		-- In Match: Show ONLY current table, hide ALL others
+		-- In Match: Ignore proximity. Only current table shows.
 		for _, tableModel in ipairs(tables) do
-			local key = GetTableKey(tableModel)
-			if key == currentTableKey then
-				SetTableSpinUIEnabled(tableModel, true)
-			else
-				SetTableSpinUIEnabled(tableModel, false)
-			end
+			local shouldShow = (tableModel.Name == currentTableKey)
+			SetTableRuntimeBillboardEnabled(tableModel, shouldShow)
 		end
-	else
-		-- Not In Match: Show nearby tables only
-		if not hrp then return end
-		local pos = hrp.Position
-		
+		return
+	end
+
+	-- Not In Match: Proximity-based.
+	local pos = getPlayerPos()
+	if not pos then
+		-- Character not ready: hide all to avoid leaving stale "on" state
 		for _, tableModel in ipairs(tables) do
-			local spinDisplay = tableModel:FindFirstChild("SpinDisplay")
-			local anchor = spinDisplay and spinDisplay:FindFirstChild("BillboardAnchor")
-			
-			if anchor and anchor:IsA("BasePart") then
-				local dist = (anchor.Position - pos).Magnitude
-				SetTableSpinUIEnabled(tableModel, dist <= NEAR_DISTANCE)
-			else
-				SetTableSpinUIEnabled(tableModel, false)
-			end
+			SetTableRuntimeBillboardEnabled(tableModel, false)
 		end
+		return
+	end
+
+	for _, tableModel in ipairs(tables) do
+		local anchorPos = getAnchorPos(tableModel)
+		local dist = (anchorPos - pos).Magnitude
+		SetTableRuntimeBillboardEnabled(tableModel, dist <= NEAR_DISTANCE)
+	end
+end
+
+-- Public refresh hook (kept for existing callsites)
+function WorldSpinUIController.Refresh()
+	UpdateVisibility()
+end
+
+local function StartLoop()
+	if updateConnection then return end
+	updateConnection = RunService.Heartbeat:Connect(function()
+		local now = os.clock()
+		if now - lastUpdate >= UPDATE_INTERVAL then
+			lastUpdate = now
+			UpdateVisibility()
+		end
+	end)
+end
+
+local function StopLoop()
+	if updateConnection then
+		updateConnection:Disconnect()
+		updateConnection = nil
 	end
 end
 
@@ -166,10 +200,7 @@ function WorldSpinUIController.SetInMatch(inMatch, tableIdOrName)
 	if isInMatch then
 		-- ENTERING MATCH
 		-- 1. Stop Update Loop
-		if updateConnection then
-			updateConnection:Disconnect()
-			updateConnection = nil
-		end
+		StopLoop()
 		
 		-- 2. Start Runtime Listener (Hide new spawns on other tables)
 		if not runtimeListener then
@@ -204,8 +235,8 @@ function WorldSpinUIController.SetInMatch(inMatch, tableIdOrName)
 		end
 		
 		-- 3. Immediate Refresh (Hides existing)
-		WorldSpinUIController.Refresh()
-		task.defer(WorldSpinUIController.Refresh)
+		UpdateVisibility()
+		task.defer(UpdateVisibility)
 		
 	else
 		-- LEAVING MATCH
@@ -224,24 +255,21 @@ function WorldSpinUIController.SetInMatch(inMatch, tableIdOrName)
 		originalEnabled = {}
 		
 		-- 3. Start Update Loop
-		if not updateConnection then
-			updateConnection = RunService.Heartbeat:Connect(function()
-				local now = os.clock()
-				if now - lastUpdate >= UPDATE_INTERVAL then
-					lastUpdate = now
-					WorldSpinUIController.Refresh()
-				end
-			end)
-		end
+		StartLoop()
 		
 		-- 4. Immediate Refresh (Show nearby)
-		WorldSpinUIController.Refresh()
+		UpdateVisibility()
 	end
 end
 
 function WorldSpinUIController.Init()
-	-- Start loop immediately (assuming not in match at start)
-	WorldSpinUIController.SetInMatch(false, nil)
+	-- Start loop immediately (idempotent). Do not call SetInMatch(false, nil) here,
+	-- because SetInMatch is intentionally idempotent and may early-return.
+	StartLoop()
+	UpdateVisibility()
+	Players.LocalPlayer.CharacterAdded:Connect(function()
+		task.defer(UpdateVisibility)
+	end)
 end
 
 return WorldSpinUIController

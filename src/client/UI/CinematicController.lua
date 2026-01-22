@@ -94,7 +94,7 @@ function CinematicController.Warmup()
 	
 	-- Preload Spin Anim
 	local ContentProvider = game:GetService("ContentProvider")
-	local spinAnimId = "rbxassetid://80453620398560"
+	local spinAnimId = "rbxassetid://91378284817819"
 	local anim = Instance.new("Animation")
 	anim.AnimationId = spinAnimId
 	

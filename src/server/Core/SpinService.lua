@@ -278,8 +278,8 @@ function SpinService.SpinTable(tableModel, spinConfig, stopFlag)
 	
 	-- Fire IMMEDIATELY (no task.wait, no delays)
 	for _, p in ipairs(players) do
-		print("[CINE] FIRING", p.Name, 80453620398560, duration)
-		PlaySpinCinematic:FireClient(p, 80453620398560, duration, tableModel)
+		print("[CINE] FIRING", p.Name, 91378284817819, duration)
+		PlaySpinCinematic:FireClient(p, 91378284817819, duration, tableModel)
 	end
 	
 	local lastSpinTime = 0
