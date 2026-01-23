@@ -4,6 +4,7 @@ local Workspace = game:GetService("Workspace")
 local Core = script.Parent
 local FXService = require(Core.FXService)
 local PluginRunner = require(Core.PluginRunner)
+local StatsService = require(Core.StatsService)
 
 local RoundService = {}
 
@@ -364,6 +365,61 @@ function RoundService.StartRound(tableModel, players)
 			print(string.format("[RoundService] winners={%d} losers={%d} sound=%s respawned={%s} eject={%s}", 
 				#winners, #losers, soundPlayed, table.concat(respawned, ","), table.concat(ejected, ",")))
 			
+			-- Apply Stats/Rewards (Step 6)
+			local roundId = tableModel.Name .. "_" .. tostring(os.clock()) -- Unique round identifier
+			local playerA = players[1]
+			local playerB = players[2]
+			
+			local resultPayload = {
+				roundId = roundId,
+				rewardCash = data.reward or 0,
+				wasAborted = false
+			}
+			
+			-- Determine outcome type
+			if #winners == 0 then
+				-- Both lost
+				resultPayload.didBothLose = true
+			elseif #winners == #participants then
+				-- Draw/Split (both win)
+				resultPayload.didDraw = true
+			else
+				-- Single winner
+				if #winners == 1 then
+					resultPayload.winnerUserId = winners[1].UserId
+					-- Find loser
+					for _, p in ipairs(participants) do
+						if p ~= winners[1] then
+							resultPayload.loserUserId = p.UserId
+							break
+						end
+					end
+				end
+			end
+			
+			-- Apply stats
+			StatsService.ApplyRoundResult(playerA, playerB, resultPayload)
+			
+			-- Notify clients of updated stats (Step 6 client feedback)
+			for _, p in ipairs(players) do
+				if p and p.Parent then
+					local stats = StatsService.GetStats(p)
+					if stats then
+						local StatsUpdate = Remotes:FindFirstChild("StatsUpdate")
+						if StatsUpdate then
+							-- Include reward delta for this specific player
+							local cashDelta = 0
+							if resultPayload.didDraw then
+								cashDelta = math.floor((resultPayload.rewardCash or 0) / 2)
+							elseif resultPayload.winnerUserId == p.UserId then
+								cashDelta = resultPayload.rewardCash or 0
+							end
+							StatsUpdate:FireClient(p, stats, cashDelta)
+						end
+					end
+				end
+			end
+			
 			-- Clean up session
 			-- Disconnect player leave connections
 			for _, p in ipairs(players) do
@@ -487,6 +543,18 @@ function AbortRound(tableModel, reason)
 	-- Set abort flag
 	session.abortFlag = true
 	session.state = "ENDED"
+	
+	-- Step 6: Apply abort to stats (no rewards, no stat changes)
+	if session.players and #session.players >= 2 then
+		local roundId = tableModel.Name .. "_abort_" .. tostring(os.clock())
+		local resultPayload = {
+			roundId = roundId,
+			wasAborted = true,
+			rewardCash = 0,
+			reason = reason
+		}
+		StatsService.ApplyRoundResult(session.players[1], session.players[2], resultPayload)
+	end
 	
 	-- CRITICAL: Cleanup spin visuals if they exist (item + billboard)
 	if session.spinCleanup then

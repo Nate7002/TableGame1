@@ -39,7 +39,8 @@ local function getRemotes()
 		MatchEnd = ensureEvent("MatchEnd"), -- Added for match end signal
 		OpponentLeft = ensureEvent("OpponentLeft"), -- Added for player leave notification
 		OpponentLeftToast = ensureEvent("OpponentLeftToast"), -- Added for toast during spin
-		OpponentLeftCard = ensureEvent("OpponentLeftCard") -- Added for card message during stage
+		OpponentLeftCard = ensureEvent("OpponentLeftCard"), -- Added for card message during stage
+		StatsUpdate = ensureEvent("StatsUpdate") -- Added for Step 6 stats feedback
 	}
 end
 

@@ -322,6 +322,39 @@ else
 	warn("[CLIENT] OpponentLeftCard not found")
 end
 
+-- Step 6: Stats Update Feedback
+local StatsUpdate = Remotes:WaitForChild("StatsUpdate", 5)
+if StatsUpdate then
+	StatsUpdate.OnClientEvent:Connect(function(stats, cashDelta)
+		cashDelta = cashDelta or 0
+		print("[CLIENT] StatsUpdate RECEIVED:", stats.Cash, "total cash", cashDelta, "delta", stats.Wins, "wins", stats.Streak, "streak")
+		
+		-- Ensure toast is available
+		if not toastComponent then
+			getScreenGui() -- Initialize if needed
+		end
+		
+		if toastComponent then
+			-- Show reward toast if cash was earned this round
+			if cashDelta > 0 then
+				local message = string.format("💰 +$%d | 🏆 %d Wins | 🔥 %d Streak", 
+					cashDelta, stats.Wins or 0, stats.Streak or 0)
+				toastComponent:Show(message, 4)
+			else
+				-- Show stats even if no cash (for streak reset visibility)
+				local message = string.format("🏆 %d Wins | 🔥 %d Streak", 
+					stats.Wins or 0, stats.Streak or 0)
+				toastComponent:Show(message, 3)
+			end
+		else
+			warn("[CLIENT] toastComponent not available for StatsUpdate")
+		end
+	end)
+	print("[CLIENT] Hooked StatsUpdate")
+else
+	warn("[CLIENT] StatsUpdate not found")
+end
+
 -- Safe Init Calls
 if CinematicController and CinematicController.Init then
 	local ok2, err = pcall(function() 

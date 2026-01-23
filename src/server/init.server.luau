@@ -2,12 +2,16 @@ local Core = script:WaitForChild("Core")
 local TableService = require(Core:WaitForChild("TableService"))
 local RoundService = require(Core:WaitForChild("RoundService"))
 local UIService = require(Core:WaitForChild("UIService"))
+local StatsService = require(Core:WaitForChild("StatsService"))
 local PluginRegistry = require(Core:WaitForChild("PluginRegistry"))
 local PluginRunner = require(Core:WaitForChild("PluginRunner"))
 local Players = game:GetService("Players")
 
 local function Start()
-	print("[GameManager] Starting Phase 1 Step 4...")
+	print("[GameManager] Starting Phase 1 Step 6...")
+	
+	-- Initialize Stats Service (Step 6)
+	StatsService.Init()
 	
 	-- Initialize Table Service
 	TableService.Init()
