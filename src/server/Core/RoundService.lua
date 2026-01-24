@@ -11,11 +11,49 @@ local RoundService = {}
 -- State
 local activeSessions = {} -- [tableModel] = { startTime = number, players = {Player}, state = "SPINNING"|"STAGE1"|"STAGE2"|"RESOLVING"|"ENDED", spinStopFlag = boolean?, abortFlag = boolean? }
 local playerLeaveConnections = {} -- [Player] = connection
+local activeCountdowns = {} -- [tableModel] = { token = string, players = {Player} }
 
 -- Constants
 local ROUND_DURATION = 5
+local COUNTDOWN_DURATION = 3 -- Seconds before match starts
 
 -- Private Functions
+
+-- Helper: Format round result summary for logging
+local function formatResultSummary(resultPayload, participants, winnersArray, losersArray)
+	local summary = {
+		outcome = "UNKNOWN",
+		winnerNames = {},
+		loserNames = {},
+		rewardCash = resultPayload.rewardCash or 0
+	}
+	
+	if resultPayload.wasAborted then
+		summary.outcome = "ABORTED"
+	elseif resultPayload.didBothLose then
+		summary.outcome = "BOTH_LOSE"
+		for _, p in ipairs(participants) do
+			table.insert(summary.loserNames, p.Name)
+		end
+	elseif resultPayload.didDraw then
+		summary.outcome = "DRAW_SPLIT"
+		for _, p in ipairs(participants) do
+			table.insert(summary.winnerNames, p.Name)
+		end
+	else
+		-- Single winner/loser
+		summary.outcome = "SINGLE_WINNER"
+		for _, w in ipairs(winnersArray) do
+			table.insert(summary.winnerNames, w.Name)
+		end
+		for _, l in ipairs(losersArray) do
+			table.insert(summary.loserNames, l.Name)
+		end
+	end
+	
+	return summary
+end
+
 local function freezePlayer(player, shouldFreeze)
 	if not (player and player.Character) then return end
 	local hum = player.Character:FindFirstChild("Humanoid")
@@ -109,7 +147,129 @@ local function finishRound(tableModel, winner, loser, isTie)
 	-- Ah, I see: In StartRound (lines 145+), I have the logic that needs updating.
 end
 
--- Public API
+-- Helper: Validate players are still seated and ready
+local function validatePlayersSeated(tableModel, players)
+	if not (tableModel and tableModel.Parent) then
+		return false, "Table invalid"
+	end
+	
+	for _, player in ipairs(players) do
+		if not (player and player.Parent and player.Character) then
+			return false, player and (player.Name .. " disconnected") or "Player invalid"
+		end
+		
+		local hum = player.Character:FindFirstChild("Humanoid")
+		if not (hum and hum.Sit) then
+			return false, (player.Name .. " unseated")
+		end
+	end
+	
+	return true, "Valid"
+end
+
+-- Public API: Start countdown before match (called by TableService.OnTableReady)
+function RoundService.HandleTableReady(tableModel, players)
+	-- Check if already counting down or in session
+	if activeCountdowns[tableModel] or activeSessions[tableModel] then
+		return
+	end
+	
+	if #players < 2 then
+		return
+	end
+	
+	-- Generate unique countdown token
+	local countdownToken = tableModel.Name .. "_" .. tostring(os.clock())
+	activeCountdowns[tableModel] = {
+		token = countdownToken,
+		players = players
+	}
+	
+	print(string.format("[RoundService] Countdown start: %s (%s vs %s) t=%d", 
+		tableModel.Name, players[1].Name, players[2].Name, COUNTDOWN_DURATION))
+	
+	-- Fire countdown start to clients
+	local Remotes = game:GetService("ReplicatedStorage"):FindFirstChild("Remotes")
+	if Remotes then
+		local MatchCountdown = Remotes:FindFirstChild("MatchCountdown")
+		if MatchCountdown then
+			for _, p in ipairs(players) do
+				if p and p.Parent then
+					-- Guard: ensure opponent exists and get name safely
+					local opponent = (p == players[1]) and players[2] or players[1]
+					local opponentName = (opponent and opponent.Parent and opponent.Name) or "Opponent"
+					MatchCountdown:FireClient(p, tableModel.Name, COUNTDOWN_DURATION, opponentName)
+				end
+			end
+		end
+	end
+	
+	-- Countdown loop (non-blocking per table)
+	task.spawn(function()
+		for i = COUNTDOWN_DURATION, 1, -1 do
+			task.wait(1)
+			
+			-- Validate countdown still valid
+			local countdown = activeCountdowns[tableModel]
+			if not countdown or countdown.token ~= countdownToken then
+				print(string.format("[RoundService] Countdown cancelled: %s (superseded)", tableModel.Name))
+				return
+			end
+			
+			-- Validate players still seated
+			local valid, reason = validatePlayersSeated(tableModel, players)
+			if not valid then
+				print(string.format("[RoundService] Countdown cancelled: %s (%s)", tableModel.Name, reason))
+				activeCountdowns[tableModel] = nil
+				
+				-- Notify clients countdown cancelled
+				if Remotes then
+					local MatchCountdownCancel = Remotes:FindFirstChild("MatchCountdownCancel")
+					if MatchCountdownCancel then
+						for _, p in ipairs(players) do
+							if p and p.Parent then
+								MatchCountdownCancel:FireClient(p, reason)
+							end
+						end
+					end
+				end
+				return
+			end
+			
+			-- Update countdown (optional tick notification)
+			if i > 1 then
+				if Remotes then
+					local MatchCountdown = Remotes:FindFirstChild("MatchCountdown")
+					if MatchCountdown then
+						for _, p in ipairs(players) do
+							if p and p.Parent then
+								-- Guard: ensure opponent exists and get name safely
+								local opponent = (p == players[1]) and players[2] or players[1]
+								local opponentName = (opponent and opponent.Parent and opponent.Name) or "Opponent"
+								MatchCountdown:FireClient(p, tableModel.Name, i - 1, opponentName)
+							end
+						end
+					end
+				end
+			end
+		end
+		
+		-- Final validation before starting
+		local valid, reason = validatePlayersSeated(tableModel, players)
+		if not valid then
+			print(string.format("[RoundService] Countdown cancelled: %s (%s)", tableModel.Name, reason))
+			activeCountdowns[tableModel] = nil
+			return
+		end
+		
+		-- Countdown complete -> start round
+		print(string.format("[RoundService] Countdown complete -> starting round: %s", tableModel.Name))
+		activeCountdowns[tableModel] = nil
+		RoundService.StartRound(tableModel, players)
+	end)
+end
+
+-- Public API: Start round (called after countdown or directly if needed)
 function RoundService.StartRound(tableModel, players)
 	if activeSessions[tableModel] then
 		warn("[RoundService] Round already active for " .. tableModel.Name)
@@ -362,9 +522,6 @@ function RoundService.StartRound(tableModel, players)
 				end
 			end
 			
-			print(string.format("[RoundService] winners={%d} losers={%d} sound=%s respawned={%s} eject={%s}", 
-				#winners, #losers, soundPlayed, table.concat(respawned, ","), table.concat(ejected, ",")))
-			
 			-- Apply Stats/Rewards (Step 6)
 			local roundId = tableModel.Name .. "_" .. tostring(os.clock()) -- Unique round identifier
 			local playerA = players[1]
@@ -399,6 +556,16 @@ function RoundService.StartRound(tableModel, players)
 			
 			-- Apply stats
 			StatsService.ApplyRoundResult(playerA, playerB, resultPayload)
+			
+			-- Log round result (AFTER resultPayload is finalized, so it matches StatsService exactly)
+			local resultSummary = formatResultSummary(resultPayload, participants, winners, losers)
+			print(string.format("[RoundService] ROUND RESULT: outcome=%s | winners=[%s] | losers=[%s] | reward=$%d", 
+				resultSummary.outcome,
+				table.concat(resultSummary.winnerNames, ","),
+				table.concat(resultSummary.loserNames, ","),
+				resultSummary.rewardCash))
+			print(string.format("[RoundService] ACTIONS: sound=%s | respawned=[%s] | ejected=[%s]", 
+				soundPlayed, table.concat(respawned, ","), table.concat(ejected, ",")))
 			
 			-- Notify clients of updated stats (Step 6 client feedback)
 			for _, p in ipairs(players) do

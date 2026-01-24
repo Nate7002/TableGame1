@@ -107,6 +107,8 @@ end
 
 -- Handlers
 local function onPromptChoice(payload)
+	-- Clear countdown state when UI opens (match in progress)
+	countdownActive = false
 	print("[CLIENT] PromptChoice RECEIVED")
 	getScreenGui() -- Ensure created
 	
@@ -183,6 +185,8 @@ end
 -- Cinematic remotes (UIController is the ONLY listener - no double-start)
 if PlaySpinCinematic and CinematicController then
 	PlaySpinCinematic.OnClientEvent:Connect(function(animId, duration, tableModel)
+		-- Clear countdown state when match actually starts
+		countdownActive = false
 		print("[CLIENT] PlaySpinCinematic RECEIVED:", animId, duration)
 		if CinematicController and CinematicController.Play then
 			local ok, err = pcall(function()
@@ -353,6 +357,65 @@ if StatsUpdate then
 	print("[CLIENT] Hooked StatsUpdate")
 else
 	warn("[CLIENT] StatsUpdate not found")
+end
+
+-- Match Countdown Display (using Toast system)
+local MatchCountdown = Remotes:WaitForChild("MatchCountdown", 5)
+local MatchCountdownCancel = Remotes:WaitForChild("MatchCountdownCancel", 5)
+local countdownActive = false
+
+if MatchCountdown then
+	MatchCountdown.OnClientEvent:Connect(function(tableId, secondsRemaining, opponentName)
+		-- Guard: ensure opponentName is a string
+		opponentName = tostring(opponentName or "Opponent")
+		
+		print("[CLIENT] MatchCountdown RECEIVED:", tableId, secondsRemaining, opponentName)
+		
+		-- Ensure toast is available
+		if not toastComponent then
+			getScreenGui() -- Initialize if needed
+		end
+		
+		if not toastComponent then
+			warn("[CLIENT] Toast not available for countdown")
+			return
+		end
+		
+		countdownActive = true
+		
+		-- Show countdown toast
+		if secondsRemaining > 0 then
+			local message = string.format("⏱️ Match starting in %d... (vs %s)", secondsRemaining, opponentName)
+			toastComponent:Show(message, 1.5) -- Duration slightly longer than tick interval
+		end
+	end)
+	print("[CLIENT] Hooked MatchCountdown")
+else
+	warn("[CLIENT] MatchCountdown not found")
+end
+
+if MatchCountdownCancel then
+	MatchCountdownCancel.OnClientEvent:Connect(function(reason)
+		-- Guard: ensure reason is a string
+		reason = tostring(reason or "Unknown reason")
+		
+		print("[CLIENT] MatchCountdownCancel RECEIVED:", reason)
+		
+		countdownActive = false
+		
+		-- Ensure toast is available
+		if not toastComponent then
+			getScreenGui()
+		end
+		
+		if toastComponent then
+			local message = string.format("❌ Match cancelled: %s", reason)
+			toastComponent:Show(message, 2)
+		end
+	end)
+	print("[CLIENT] Hooked MatchCountdownCancel")
+else
+	warn("[CLIENT] MatchCountdownCancel not found")
 end
 
 -- Safe Init Calls

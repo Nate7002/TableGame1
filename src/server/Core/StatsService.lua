@@ -1,5 +1,7 @@
 local Players = game:GetService("Players")
 
+local DataService = require(script.Parent:WaitForChild("DataService"))
+
 local StatsService = {}
 
 -- Constants
@@ -28,23 +30,99 @@ local function ensureStats(player)
 	return playerStats[userId]
 end
 
+-- Helper: Non-blocking save after stats mutation
+local function asyncSavePlayer(player, reason)
+	if not (player and player.Parent) then return end
+	
+	local userId = player.UserId
+	local stats = playerStats[userId]
+	if not stats then return end
+	
+	-- Spawn non-blocking save
+	task.spawn(function()
+		local payload = {
+			v = 1,
+			stats = {
+				Cash = stats.Cash,
+				Wins = stats.Wins,
+				Streak = stats.Streak,
+				MaxStreak = stats.MaxStreak
+			},
+			updatedAt = os.time()
+		}
+		DataService.SavePlayer(player, payload, reason)
+	end)
+end
+
 -- Public API
 
 function StatsService.Init()
 	print("[StatsService] Initializing...")
 	
-	-- Cleanup on player leave
-	Players.PlayerRemoving:Connect(function(player)
-		local userId = player.UserId
-		if playerStats[userId] then
-			print(string.format("[StatsService] Clearing stats for %s (UserId: %d)", player.Name, userId))
-			playerStats[userId] = nil
+	-- Load data on player join
+	Players.PlayerAdded:Connect(function(player)
+		local data = DataService.LoadPlayer(player)
+		if data and data.stats then
+			-- Hydrate from loaded data
+			playerStats[player.UserId] = {
+				Cash = data.stats.Cash or 0,
+				Wins = data.stats.Wins or 0,
+				Streak = data.stats.Streak or 0,
+				MaxStreak = data.stats.MaxStreak or 0
+			}
+			print(string.format("[StatsService] Hydrated %s from datastore", player.Name))
+		else
+			-- Use defaults
+			ensureStats(player)
 		end
 	end)
 	
-	-- Initialize stats for existing players
+	-- Save and cleanup on player leave
+	Players.PlayerRemoving:Connect(function(player)
+		-- Capture reliable identifiers immediately while player reference is valid
+		local userId = player and player.UserId
+		local playerName = player and player.Name or "Unknown"
+		
+		-- Validate userId (Roblox UserIds are always positive integers)
+		if not userId or userId <= 0 then
+			warn(string.format("[StatsService] Invalid or missing UserId for %s - skipping save", playerName))
+			return
+		end
+		
+		if playerStats[userId] then
+			-- Save before clearing
+			local payload = {
+				v = 1,
+				stats = {
+					Cash = playerStats[userId].Cash,
+					Wins = playerStats[userId].Wins,
+					Streak = playerStats[userId].Streak,
+					MaxStreak = playerStats[userId].MaxStreak
+				},
+				updatedAt = os.time()
+			}
+			DataService.SavePlayer(player, payload, "PlayerRemoving")
+			
+			print(string.format("[StatsService] Saved and cleared stats for %s (UserId: %d)", playerName, userId))
+			playerStats[userId] = nil
+			DataService.ClearCache(userId)
+		end
+	end)
+	
+	-- Load stats for existing players
 	for _, player in ipairs(Players:GetPlayers()) do
-		ensureStats(player)
+		local data = DataService.LoadPlayer(player)
+		if data and data.stats then
+			playerStats[player.UserId] = {
+				Cash = data.stats.Cash or 0,
+				Wins = data.stats.Wins or 0,
+				Streak = data.stats.Streak or 0,
+				MaxStreak = data.stats.MaxStreak or 0
+			}
+			print(string.format("[StatsService] Hydrated %s (existing player)", player.Name))
+		else
+			ensureStats(player)
+		end
 	end
 	
 	print("[StatsService] Ready.")
@@ -114,6 +192,10 @@ function StatsService.ApplyRoundResult(playerA, playerB, resultPayload)
 		print("[StatsService] Both players lost - resetting streaks")
 		statsA.Streak = 0
 		statsB.Streak = 0
+		
+		-- Save both players (non-blocking)
+		asyncSavePlayer(playerA, "RoundResult")
+		asyncSavePlayer(playerB, "RoundResult")
 		return
 	end
 	
@@ -139,6 +221,9 @@ function StatsService.ApplyRoundResult(playerA, playerB, resultPayload)
 		print(string.format("[StatsService] Split/Split: %s (+$%d, Wins:%d, Streak:%d, MaxStreak:%d)",
 			playerB.Name, splitReward, statsB.Wins, statsB.Streak, statsB.MaxStreak))
 		
+		-- Save both players (non-blocking)
+		asyncSavePlayer(playerA, "RoundResult")
+		asyncSavePlayer(playerB, "RoundResult")
 		return
 	end
 	
@@ -175,6 +260,12 @@ function StatsService.ApplyRoundResult(playerA, playerB, resultPayload)
 		local loserStats = ensureStats(loser)
 		loserStats.Streak = 0
 		print(string.format("[StatsService] Loser: %s (Streak reset to 0)", loser.Name))
+	end
+	
+	-- Save both players (non-blocking)
+	asyncSavePlayer(winner, "RoundResult")
+	if loser then
+		asyncSavePlayer(loser, "RoundResult")
 	end
 end
 

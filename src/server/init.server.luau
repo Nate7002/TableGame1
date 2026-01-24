@@ -2,23 +2,27 @@ local Core = script:WaitForChild("Core")
 local TableService = require(Core:WaitForChild("TableService"))
 local RoundService = require(Core:WaitForChild("RoundService"))
 local UIService = require(Core:WaitForChild("UIService"))
+local DataService = require(Core:WaitForChild("DataService"))
 local StatsService = require(Core:WaitForChild("StatsService"))
 local PluginRegistry = require(Core:WaitForChild("PluginRegistry"))
 local PluginRunner = require(Core:WaitForChild("PluginRunner"))
 local Players = game:GetService("Players")
 
 local function Start()
-	print("[GameManager] Starting Phase 1 Step 6...")
+	print("[GameManager] Starting Phase 1 Step 7...")
 	
-	-- Initialize Stats Service (Step 6)
+	-- Initialize Data Service (Step 7 - before Stats)
+	DataService.Init()
+	
+	-- Initialize Stats Service (Step 6/7)
 	StatsService.Init()
 	
 	-- Initialize Table Service
 	TableService.Init()
 	
-	-- Connect TableService to RoundService
+	-- Connect TableService to RoundService (with countdown)
 	TableService.OnTableReady:Connect(function(tableModel, players)
-		RoundService.StartRound(tableModel, players)
+		RoundService.HandleTableReady(tableModel, players)
 	end)
 	
 	-- TEST HOOK: UI System (Step 3)
