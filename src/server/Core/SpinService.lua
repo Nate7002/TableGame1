@@ -6,6 +6,12 @@ local SpinService = {}
 
 -- Config
 local DEBUG = false
+local SPIN_TICK = 0.1 -- Fixed tick interval for spin updates (seconds)
+
+-- Near-miss cooldown state (module-level)
+local lastNearMissAt = {} -- [tableModel] = os.clock() timestamp
+local tableSpinCount = {} -- [tableModel] = integer
+local lastNearMissSpin = {} -- [tableModel] = integer
 
 -- Assets
 local SPIN_MODELS_PATH = "Assets/DoubleDown/SpinItems/Models"
@@ -284,7 +290,7 @@ function SpinService.SpinTable(tableModel, spinConfig, stopFlag, cineToken)
 	-- Spin Logic
 	local duration = 3.5
 	local startTime = os.clock()
-	local spinSpeed = 0.1 -- Initial delay
+	local spinSpeed = SPIN_TICK -- Fixed tick interval
 	
 	-- Fire Cinematic IMMEDIATELY (no delays, same tick as spin start)
 	local UIService = require(game:GetService("ServerScriptService").Server.Core.UIService)
@@ -335,7 +341,133 @@ function SpinService.SpinTable(tableModel, spinConfig, stopFlag, cineToken)
 		itemPool = spinConfig.GetPool()
 	end
 	
-	-- Spin Loop
+	-- NEAR-MISS: Increment spin count for this table
+	tableSpinCount[tableModel] = (tableSpinCount[tableModel] or 0) + 1
+	
+	-- NEAR-MISS: Decide FINAL reward at spin start (CRITICAL: never changes)
+	local finalItem = pickWithoutDuplicate(spinConfig.PickRandom, nil, itemPool)
+	if not finalItem then
+		-- Fallback: pick first item from pool
+		if itemPool and #itemPool > 0 then
+			finalItem = itemPool[1]
+		else
+			warn("[SpinService] Failed to pick finalItem, using fallback")
+			finalItem = { id = "RobuxCoin", name = "Robux Coin", rarity = "Common", value = 50, chance = 12.5 }
+		end
+	end
+	
+	if DEBUG then
+		print(string.format("[SpinService] FinalItem decided: %s (rarity: %s, value: %d)", 
+			finalItem.id, finalItem.rarity, finalItem.value))
+	end
+	
+	-- NEAR-MISS: Determine eligibility and cooldown
+	local nearMissActive = false
+	local baitItem = nil
+	
+	-- Eligibility: finalItem must NOT be Epic/Mythic/Ultra, and NOT jackpot
+	local isEligible = (finalItem.rarity ~= "Epic" and finalItem.rarity ~= "Mythic" and finalItem.rarity ~= "Ultra")
+	local isNotJackpot = (finalItem.id ~= "Diamond" and finalItem.rarity ~= "Ultra")
+	
+	if isEligible and isNotJackpot then
+		-- Cooldown check: time-based and spin-count-based
+		local timeSinceLast = os.clock() - (lastNearMissAt[tableModel] or 0)
+		local spinsSinceLast = tableSpinCount[tableModel] - (lastNearMissSpin[tableModel] or -999)
+		local cooldownPassed = (timeSinceLast >= 20) and (spinsSinceLast >= 2)
+		
+		if cooldownPassed then
+			-- Build bait pool (Epic/Mythic/Ultra only, exclude finalItem)
+			local baitPool = {}
+			if itemPool then
+				for _, item in ipairs(itemPool) do
+					if (item.rarity == "Epic" or item.rarity == "Mythic" or item.rarity == "Ultra") 
+						and item.id ~= finalItem.id and item.name ~= finalItem.name then
+						table.insert(baitPool, item)
+					end
+				end
+			end
+			
+			if #baitPool > 0 then
+				-- Tier-weighted selection
+				local epicItems = {}
+				local mythicItems = {}
+				local ultraItems = {}
+				
+				for _, item in ipairs(baitPool) do
+					if item.rarity == "Epic" then
+						table.insert(epicItems, item)
+					elseif item.rarity == "Mythic" then
+						table.insert(mythicItems, item)
+					elseif item.rarity == "Ultra" then
+						table.insert(ultraItems, item)
+					end
+				end
+				
+				-- Use deterministic RNG for near-miss decisions
+				local rng = Random.new(math.floor(os.clock() * 1000) + tableSpinCount[tableModel] * 97)
+				local nearMissRoll = rng:NextNumber()
+				
+				-- 42% chance to trigger near-miss
+				if nearMissRoll < 0.42 then
+					-- Tier selection: 70% Epic, 25% Mythic, 5% Ultra
+					local tierRoll = rng:NextNumber()
+					local selectedTier = nil
+					
+					if tierRoll < 0.70 and #epicItems > 0 then
+						selectedTier = epicItems
+					elseif tierRoll < 0.95 and #mythicItems > 0 then
+						selectedTier = mythicItems
+					elseif #ultraItems > 0 then
+						selectedTier = ultraItems
+					else
+						-- Fallback: prioritize Epic > Mythic > Ultra
+						if #epicItems > 0 then
+							selectedTier = epicItems
+						elseif #mythicItems > 0 then
+							selectedTier = mythicItems
+						elseif #ultraItems > 0 then
+							selectedTier = ultraItems
+						end
+					end
+					
+					if selectedTier and #selectedTier > 0 then
+						baitItem = selectedTier[rng:NextInteger(1, #selectedTier)]
+						nearMissActive = true
+						
+						-- Update cooldown state
+						lastNearMissAt[tableModel] = os.clock()
+						lastNearMissSpin[tableModel] = tableSpinCount[tableModel]
+						
+						if DEBUG then
+							print(string.format("[SpinService] Near-miss ACTIVE: bait=%s (rarity: %s)", 
+								baitItem.id, baitItem.rarity))
+						end
+					end
+				else
+					if DEBUG then
+						print(string.format("[SpinService] Near-miss roll failed: %.3f >= 0.42", nearMissRoll))
+					end
+				end
+			else
+				if DEBUG then
+					print("[SpinService] Near-miss disabled: no bait items available")
+				end
+			end
+		else
+			if DEBUG then
+				print(string.format("[SpinService] Near-miss cooldown: time=%.1fs spins=%d", 
+					timeSinceLast, spinsSinceLast))
+			end
+		end
+	end
+	
+	-- Spin Loop with near-miss end sequence
+	local lastSpinTime = 0
+	local currentModel = nil
+	local currentItem = nil
+	local lastItemId = nil
+	local endPhase = 0 -- 0=normal, 1=pre-final, 2=bait, 3=final locked
+	
 	while os.clock() - startTime < duration do
 		-- Check stop flag (for opponent leave during spin)
 		if stopFlag and stopFlag() then
@@ -344,6 +476,7 @@ function SpinService.SpinTable(tableModel, spinConfig, stopFlag, cineToken)
 		end
 		
 		local now = os.clock()
+		local t = (now - startTime) / duration
 		
 		-- Update Item visually
 		if now - lastSpinTime >= spinSpeed then
@@ -352,12 +485,53 @@ function SpinService.SpinTable(tableModel, spinConfig, stopFlag, cineToken)
 			-- Cleanup old
 			if currentModel then currentModel:Destroy() end
 			
-			-- BUG FIX B: Pick next (no consecutive duplicates)
-			currentItem = pickWithoutDuplicate(spinConfig.PickRandom, lastItemId, itemPool)
-			lastItemId = currentItem.id
+			-- End phase logic (when t >= 0.90)
+			if t >= 0.90 then
+				if endPhase == 0 then
+					-- Enter pre-final phase
+					endPhase = 1
+					if DEBUG then
+						print("[SpinService] Entering end phase")
+					end
+				elseif endPhase == 1 then
+					-- Show bait (if near-miss active)
+					if nearMissActive and baitItem then
+						endPhase = 2
+						currentItem = baitItem
+						if DEBUG then
+							print(string.format("[SpinService] Showing BAIT: %s", baitItem.id))
+						end
+					else
+						-- Skip bait, go straight to final
+						endPhase = 3
+						currentItem = finalItem
+						if DEBUG then
+							print("[SpinService] Skipping bait, showing final")
+						end
+					end
+				elseif endPhase == 2 then
+					-- Final locked: always show finalItem
+					endPhase = 3
+					currentItem = finalItem
+					if DEBUG then
+						print("[SpinService] Final locked: showing finalItem")
+					end
+				else
+					-- Phase 3: keep showing finalItem
+					currentItem = finalItem
+				end
+			else
+				-- Normal phase: random pick with anti-duplicate
+				currentItem = pickWithoutDuplicate(spinConfig.PickRandom, lastItemId, itemPool)
+			end
+			
+			-- Update lastItemId for anti-duplicate (only in normal phase)
+			if endPhase == 0 then
+				lastItemId = currentItem.id
+			end
 			
 			-- Clone Model
-			if modelsFolder and itemAnchor then
+			if modelsFolder and itemAnchor and currentItem then
 				local template = modelsFolder:FindFirstChild(currentItem.id) or modelsFolder:FindFirstChild(currentItem.name)
 				if template then
 					currentModel = template:Clone()
@@ -367,21 +541,33 @@ function SpinService.SpinTable(tableModel, spinConfig, stopFlag, cineToken)
 			end
 			
 			-- Update UI
-			if billboard then
+			if billboard and currentItem then
 				updateBillboard(billboard, currentItem, spinConfig)
 			end
-			
-			-- Slow down
-			spinSpeed = spinSpeed * 1.1
 		end
 		
 		task.wait()
 	end
 	
-	-- Final Lock-in
-	-- Ensure we have a valid item (if loop somehow didn't run once)
-	if not currentItem then 
-		currentItem = pickWithoutDuplicate(spinConfig.PickRandom, lastItemId, itemPool)
+	-- Ensure finalItem is displayed at the end (if loop ended early)
+	if currentItem ~= finalItem then
+		if currentModel then currentModel:Destroy() end
+		currentItem = finalItem
+		
+		-- Clone final model
+		if modelsFolder and itemAnchor and finalItem then
+			local template = modelsFolder:FindFirstChild(finalItem.id) or modelsFolder:FindFirstChild(finalItem.name)
+			if template then
+				currentModel = template:Clone()
+				currentModel:PivotTo(itemAnchor.CFrame)
+				currentModel.Parent = tableModel
+			end
+		end
+		
+		-- Update UI to final
+		if billboard and finalItem then
+			updateBillboard(billboard, finalItem, spinConfig)
+		end
 	end
 	
 	-- Cleanup UI after short delay? Or keep it for the round?
@@ -392,7 +578,8 @@ function SpinService.SpinTable(tableModel, spinConfig, stopFlag, cineToken)
 		if billboard then billboard:Destroy() end
 	end
 	
-	return currentItem, cleanup
+	-- CRITICAL: Always return finalItem (never baitItem or currentItem)
+	return finalItem, cleanup
 end
 
 return SpinService
