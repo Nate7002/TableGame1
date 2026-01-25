@@ -3,6 +3,8 @@ print("[CLIENT] BOOT START", os.clock())
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local SoundService = game:GetService("SoundService")
+local TweenService = game:GetService("TweenService")
 
 -- Safe Require Helper
 local function safeRequire(path, name)
@@ -36,13 +38,18 @@ local PromptResponseEvent = Remotes:WaitForChild("PromptResponse")
 local NotifyEvent = Remotes:WaitForChild("Notify")
 local MatchStartEvent = Remotes:WaitForChild("MatchStart", 5)
 local MatchEndEvent = Remotes:WaitForChild("MatchEnd", 5)
-local UIFxEvent = Remotes:WaitForChild("UIFxEvent", 5) -- Optional wait
+local UIFxEvent = Remotes:WaitForChild("UIFxEvent", 5)
 local StopSpinCinematic = Remotes:WaitForChild("StopSpinCinematic", 5)
-local CloseStageUI = Remotes:WaitForChild("CloseStageUI", 5) -- Optional wait
-local OpponentLeft = Remotes:WaitForChild("OpponentLeft", 5) -- Optional wait
-local OpponentLeftToast = Remotes:WaitForChild("OpponentLeftToast", 5) -- Optional wait
-local OpponentLeftCard = Remotes:WaitForChild("OpponentLeftCard", 5) -- Optional wait
-local PlaySpinCinematic = Remotes:WaitForChild("PlaySpinCinematic", 5) -- Optional wait
+local CloseStageUI = Remotes:WaitForChild("CloseStageUI", 5)
+local OpponentLeft = Remotes:WaitForChild("OpponentLeft", 5)
+local OpponentLeftToast = Remotes:WaitForChild("OpponentLeftToast", 5)
+local OpponentLeftCard = Remotes:WaitForChild("OpponentLeftCard", 5)
+local PlaySpinCinematic = Remotes:WaitForChild("PlaySpinCinematic", 5)
+-- Task: Renamed to CinematicStartedAck
+local CinematicStartedAck = Remotes:WaitForChild("CinematicStartedAck", 5)
+local CinematicStoppedAck = Remotes:WaitForChild("CinematicStoppedAck", 5)
+-- Step A: MatchStartingNow
+local MatchStartingNow = Remotes:WaitForChild("MatchStartingNow", 5)
 
 -- State
 local player = Players.LocalPlayer
@@ -51,6 +58,10 @@ local playerGui = player:WaitForChild("PlayerGui")
 local screenGui = nil
 local popupComponent = nil
 local toastComponent = nil
+
+-- UX FIX B: Setup Seated UI (Invite/Leave buttons)
+local SeatUI = safeRequire(UI:WaitForChild("Components"):WaitForChild("SeatUI", 2), "SeatUI")
+local seatUIComponent = nil -- Initialized in getScreenGui or later
 
 -- Init GUI
 local function getScreenGui()
@@ -89,6 +100,17 @@ local function getScreenGui()
 			warn("[CLIENT] Toast.new FAILED:", result)
 		end
 	end
+	-- Initialize SeatUI
+	if not seatUIComponent and SeatUI then
+		local ok, result = pcall(function()
+			seatUIComponent = SeatUI.new(gui)
+		end)
+		if ok then
+			print("[CLIENT] SeatUI.new OK")
+		else
+			warn("[CLIENT] SeatUI.new FAILED:", result)
+		end
+	end
 	
 	return gui
 end
@@ -109,16 +131,28 @@ end
 local function onPromptChoice(payload)
 	-- Clear countdown state when UI opens (match in progress)
 	countdownActive = false
-	print("[CLIENT] PromptChoice RECEIVED")
+	print("[CLIENT] PromptChoice RECEIVED id=" .. tostring(payload.promptId))
+	
+	-- Stop spin sound immediately when card pops up
+	if CinematicController and CinematicController.StopSpinSound then
+		CinematicController.StopSpinSound("PromptChoice")
+	end
+	
 	getScreenGui() -- Ensure created
 	
 	-- Show reusing the single instance
 	if popupComponent and popupComponent.Show then
 		popupComponent:Show(payload, function(choiceId)
-			PromptResponseEvent:FireServer(choiceId)
+			-- Problem 1: Pass promptId through to server
+			PromptResponseEvent:FireServer(choiceId, payload.promptId)
 		end)
 	else
 		warn("[CLIENT] popupComponent not available for PromptChoice")
+	end
+	
+	-- UX FIX: Hide SeatUI when choice UI is active
+	if seatUIComponent then
+		seatUIComponent:SetChoiceActive(true)
 	end
 end
 
@@ -134,15 +168,21 @@ local function onNotify(text, duration)
 	end
 end
 
-local MatchStartEvent = Remotes:FindFirstChild("MatchStart", 5)
-local MatchEndEvent = Remotes:FindFirstChild("MatchEnd", 5)
-
 -- Listeners (with logging)
 if MatchStartEvent then
 	MatchStartEvent.OnClientEvent:Connect(function()
 		print("[CLIENT] MatchStart RECEIVED")
 		if PromptController then
 			PromptController.DisablePrompts()
+		end
+		-- UX FIX: Hide SeatUI during match
+		if seatUIComponent then
+			seatUIComponent:SetMatchActive(true)
+		end
+		-- Duck music volume
+		local music = SoundService:FindFirstChild("LobbyMusic")
+		if music then
+			TweenService:Create(music, TweenInfo.new(1), {Volume = 0.2}):Play()
 		end
 	end)
 end
@@ -152,6 +192,15 @@ if MatchEndEvent then
 		print("[CLIENT] MatchEnd RECEIVED")
 		if PromptController then
 			PromptController.EnablePrompts()
+		end
+		-- UX FIX: Show SeatUI after match (if seated)
+		if seatUIComponent then
+			seatUIComponent:SetMatchActive(false)
+		end
+		-- Restore music volume
+		local music = SoundService:FindFirstChild("LobbyMusic")
+		if music then
+			TweenService:Create(music, TweenInfo.new(1), {Volume = 0.5}):Play()
 		end
 	end)
 end
@@ -184,10 +233,10 @@ end
 
 -- Cinematic remotes (UIController is the ONLY listener - no double-start)
 if PlaySpinCinematic and CinematicController then
-	PlaySpinCinematic.OnClientEvent:Connect(function(animId, duration, tableModel)
+	PlaySpinCinematic.OnClientEvent:Connect(function(animId, duration, tableModel, cineToken)
 		-- Clear countdown state when match actually starts
 		countdownActive = false
-		print("[CLIENT] PlaySpinCinematic RECEIVED:", animId, duration)
+		print(string.format("[CLIENT] PlaySpinCinematic RECEIVED at %0.6f token=%s", os.clock(), tostring(cineToken)))
 		if CinematicController and CinematicController.Play then
 			local ok, err = pcall(function()
 				CinematicController.Play(animId, duration, tableModel)
@@ -196,12 +245,24 @@ if PlaySpinCinematic and CinematicController then
 				warn("[CLIENT] CinematicController.Play error:", err)
 			end
 		end
+		
+		-- Task: Send CinematicStartedAck IMMEDIATELY after calling Play
+		if CinematicStartedAck then
+			local tableKey = NormalizeTableKey(tableModel)
+			CinematicStartedAck:FireServer(tableKey, cineToken)
+			print(string.format("[CLIENT] Fired CinematicStartedAck at %0.6f token=%s", os.clock(), tostring(cineToken)))
+		end
+		
 		-- Hide other world UIs
 		if WorldSpinUIController then
 			local key = NormalizeTableKey(tableModel)
 			if key then
 				WorldSpinUIController.SetInMatch(true, key)
 			end
+		end
+		-- UX FIX: Hide SeatUI during cinematic (match active)
+		if seatUIComponent then
+			seatUIComponent:SetMatchActive(true)
 		end
 	end)
 	print("[CLIENT] Hooked PlaySpinCinematic (single listener)")
@@ -225,6 +286,13 @@ if StopSpinCinematic and CinematicController then
 				warn("[CLIENT] CinematicController.Stop error:", err)
 			end
 		end
+		
+		-- Problem 2: Send CinematicStoppedAck
+		if CinematicStoppedAck then
+			CinematicStoppedAck:FireServer()
+			print("[CLIENT] Fired CinematicStoppedAck")
+		end
+		
 		-- Ensure prompts are enabled if match ends abruptly via StopSpinCinematic (fallback)
 		if PromptController and immediate then
 			PromptController.EnablePrompts()
@@ -250,7 +318,10 @@ if CloseStageUI then
 		if popupComponent and popupComponent.Hide then
 			popupComponent:Hide()
 		end
-		-- Safe no-op if component missing or already hidden
+		-- UX FIX: Show SeatUI when choice UI closes (if still seated and not in match)
+		if seatUIComponent then
+			seatUIComponent:SetChoiceActive(false)
+		end
 	end)
 	print("[CLIENT] Hooked CloseStageUI")
 else
@@ -274,6 +345,12 @@ if OpponentLeftToast then
 		if CinematicController and CinematicController.Stop then pcall(function() CinematicController.Stop(true) end) end
 		if PromptController then PromptController.EnablePrompts() end
 		if WorldSpinUIController then WorldSpinUIController.SetInMatch(false, nil) end
+		
+		-- UX FIX: Reset SeatUI flags
+		if seatUIComponent then
+			seatUIComponent:SetMatchActive(false)
+			seatUIComponent:SetChoiceActive(false)
+		end
 	end)
 	print("[CLIENT] Hooked OpponentLeftToast")
 else
@@ -284,7 +361,7 @@ if OpponentLeftCard then
 	OpponentLeftCard.OnClientEvent:Connect(function(message, seconds)
 		print("[CLIENT] OpponentLeftCard RECEIVED:", message)
 		if popupComponent then
-			-- Show "Opponent left" message on card
+			-- Show \"Opponent left\" message on card
 			if popupComponent._statusLabel then
 				popupComponent._statusLabel.Text = message
 				popupComponent._statusLabel.Visible = true
@@ -315,6 +392,12 @@ if OpponentLeftCard then
 					if CinematicController and CinematicController.Stop then pcall(function() CinematicController.Stop(true) end) end
 					if PromptController then PromptController.EnablePrompts() end
 					if WorldSpinUIController then WorldSpinUIController.SetInMatch(false, nil) end
+					
+					-- UX FIX: Reset SeatUI flags
+					if seatUIComponent then
+						seatUIComponent:SetMatchActive(false)
+						seatUIComponent:SetChoiceActive(false)
+					end
 				end)
 			end
 		else
@@ -388,6 +471,11 @@ if MatchCountdown then
 			local message = string.format("⏱️ Match starting in %d... (vs %s)", secondsRemaining, opponentName)
 			toastComponent:Show(message, 1.5) -- Duration slightly longer than tick interval
 		end
+		
+		-- UX FIX: Keep SeatUI visible during countdown
+		if seatUIComponent then
+			seatUIComponent:SetMatchActive(false) -- Explicitly false during countdown
+		end
 	end)
 	print("[CLIENT] Hooked MatchCountdown")
 else
@@ -412,10 +500,34 @@ if MatchCountdownCancel then
 			local message = string.format("❌ Match cancelled: %s", reason)
 			toastComponent:Show(message, 2)
 		end
+		
+		-- UX FIX: Show SeatUI again if match cancelled
+		if seatUIComponent then
+			seatUIComponent:SetMatchActive(false)
+		end
 	end)
 	print("[CLIENT] Hooked MatchCountdownCancel")
 else
 	warn("[CLIENT] MatchCountdownCancel not found")
+end
+
+-- Step B: MatchStartingNow Handler
+if MatchStartingNow then
+	MatchStartingNow.OnClientEvent:Connect(function()
+		print(string.format("[CLIENT] MatchStartingNow RECEIVED at %0.6f", os.clock()))
+		countdownActive = false
+		
+		-- Immediately hide countdown toast fast
+		if toastComponent and toastComponent.HideFast then
+			toastComponent:HideFast()
+		end
+		
+		-- Immediately hide SeatUI fast
+		if seatUIComponent and seatUIComponent.EaseOutFast then
+			seatUIComponent:EaseOutFast()
+		end
+	end)
+	print("[CLIENT] Hooked MatchStartingNow")
 end
 
 -- Safe Init Calls
@@ -440,6 +552,53 @@ if WorldSpinUIController and WorldSpinUIController.Init then
 	WorldSpinUIController.Init()
 	print("[CLIENT] WorldSpinUIController.Init OK")
 end
+
+-- UX FIX A: Initialize PromptController seated listener
+if PromptController and PromptController.Init then
+	PromptController.Init()
+	print("[CLIENT] PromptController.Init OK")
+end
+
+-- Initialize seated UI listener
+getScreenGui() -- Ensure components are created
+if seatUIComponent then
+	-- Connect PromptController signal to SeatUI
+	if PromptController and PromptController.SeatedChanged then
+		PromptController.SeatedChanged:Connect(function(isSeated)
+			print("[CLIENT] PromptController.SeatedChanged:", isSeated)
+			seatUIComponent:SetSeated(isSeated)
+		end)
+		print("[CLIENT] Wired PromptController.SeatedChanged -> SeatUI")
+	else
+		warn("[CLIENT] PromptController missing SeatedChanged signal")
+	end
+	
+	print("[CLIENT] SeatUI initialized OK")
+else
+	warn("[CLIENT] SeatUI component not initialized")
+end
+
+-- Lobby Music
+task.spawn(function()
+	local assets = ReplicatedStorage:FindFirstChild("Assets")
+	if not assets then return end
+	local fx = assets:FindFirstChild("FX")
+	if not fx then return end
+	local musicTemplate = fx:FindFirstChild("PlaygroundOfTheStars")
+	
+	if musicTemplate and musicTemplate:IsA("Sound") then
+		local music = SoundService:FindFirstChild("LobbyMusic")
+		if not music then
+			music = musicTemplate:Clone()
+			music.Name = "LobbyMusic"
+			music.Volume = 0.5
+			music.Looped = true
+			music.Parent = SoundService
+			music:Play()
+			print("[CLIENT] Lobby music started")
+		end
+	end
+end)
 
 -- BOOT COMPLETE MARKER
 print("[CLIENT] BOOT COMPLETE", os.clock())

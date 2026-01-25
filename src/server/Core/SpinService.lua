@@ -129,8 +129,44 @@ local function updateBillboard(billboard, item, config)
 	-- Value label is hidden/unused
 end
 
+-- BUG FIX B: Helper to pick item without consecutive duplicates
+local function pickWithoutDuplicate(pickFunction, lastItemId, itemPool)
+	local MAX_RETRIES = 6
+	local picked = pickFunction()
+	
+	-- If no lastItemId (first pick), return immediately
+	if not lastItemId then
+		return picked
+	end
+	
+	-- If picked item is different, return immediately
+	if picked.id ~= lastItemId then
+		return picked
+	end
+	
+	-- Retry up to MAX_RETRIES times
+	for i = 1, MAX_RETRIES do
+		picked = pickFunction()
+		if picked.id ~= lastItemId then
+			return picked
+		end
+	end
+	
+	-- If still same after retries (tiny pool), deterministically choose first different item
+	if itemPool then
+		for _, item in ipairs(itemPool) do
+			if item.id ~= lastItemId then
+				return item
+			end
+		end
+	end
+	
+	-- Fallback: return picked even if duplicate (tiny pool, all same ID)
+	return picked
+end
+
 -- Public API
-function SpinService.SpinTable(tableModel, spinConfig, stopFlag)
+function SpinService.SpinTable(tableModel, spinConfig, stopFlag, cineToken)
 	-- stopFlag: if set to true, spin will stop immediately
 	local spinDisplay = tableModel:FindFirstChild("SpinDisplay")
 	local itemAnchor = spinDisplay and spinDisplay:FindFirstChild("ItemAnchor")
@@ -251,8 +287,7 @@ function SpinService.SpinTable(tableModel, spinConfig, stopFlag)
 	local spinSpeed = 0.1 -- Initial delay
 	
 	-- Fire Cinematic IMMEDIATELY (no delays, same tick as spin start)
-	local Remotes = ReplicatedStorage:WaitForChild("Remotes")
-	local PlaySpinCinematic = Remotes:WaitForChild("PlaySpinCinematic")
+	local UIService = require(game:GetService("ServerScriptService").Server.Core.UIService)
 	
 	local seats = {}
 	for _, inst in ipairs(tableModel:GetDescendants()) do
@@ -260,7 +295,6 @@ function SpinService.SpinTable(tableModel, spinConfig, stopFlag)
 			table.insert(seats, inst)
 		end
 	end
-	print("[CINE] Seats found:", #seats)
 
 	local players = {}
 	local seenPlayers = {}
@@ -274,20 +308,32 @@ function SpinService.SpinTable(tableModel, spinConfig, stopFlag)
 			end
 		end
 	end
-	print("[CINE] Players found:", #players, "(deduped)")
 	
-	-- Fire IMMEDIATELY (no task.wait, no delays)
+	-- Task: Fire IMMEDIATELY (no task.wait, no delays)
+	print(string.format("[SpinService] Firing PlaySpinCinematic at %0.6f", os.clock()))
 	for _, p in ipairs(players) do
-		print("[CINE] FIRING", p.Name, 91378284817819, duration)
-		PlaySpinCinematic:FireClient(p, 91378284817819, duration, tableModel)
+		UIService.PlayCinematic(p, 91378284817819, duration, tableModel, cineToken)
+	end
+	
+	-- Task: Wait for CinematicStartedAck (Move wait to AFTER firing)
+	local RoundService = require(game:GetService("ServerScriptService").Server.Core.RoundService)
+	if cineToken then
+		RoundService.WaitForCinematicStarted(cineToken, #players)
 	end
 	
 	local lastSpinTime = 0
 	
 	local currentModel = nil
 	local currentItem = nil
+	local lastItemId = nil -- BUG FIX B: Track last item ID to prevent consecutive duplicates
 	
 	local modelsFolder = getAsset(SPIN_MODELS_PATH)
+	
+	-- BUG FIX B: Get item pool for fallback (deterministic pick)
+	local itemPool = nil
+	if spinConfig and spinConfig.GetPool then
+		itemPool = spinConfig.GetPool()
+	end
 	
 	-- Spin Loop
 	while os.clock() - startTime < duration do
@@ -306,8 +352,9 @@ function SpinService.SpinTable(tableModel, spinConfig, stopFlag)
 			-- Cleanup old
 			if currentModel then currentModel:Destroy() end
 			
-			-- Pick next
-			currentItem = spinConfig.PickRandom()
+			-- BUG FIX B: Pick next (no consecutive duplicates)
+			currentItem = pickWithoutDuplicate(spinConfig.PickRandom, lastItemId, itemPool)
+			lastItemId = currentItem.id
 			
 			-- Clone Model
 			if modelsFolder and itemAnchor then
@@ -333,7 +380,9 @@ function SpinService.SpinTable(tableModel, spinConfig, stopFlag)
 	
 	-- Final Lock-in
 	-- Ensure we have a valid item (if loop somehow didn't run once)
-	if not currentItem then currentItem = spinConfig.PickRandom() end
+	if not currentItem then 
+		currentItem = pickWithoutDuplicate(spinConfig.PickRandom, lastItemId, itemPool)
+	end
 	
 	-- Cleanup UI after short delay? Or keep it for the round?
 	-- "DoubleDown plugin should call SpinService first, then proceed... Clean up when round ends."

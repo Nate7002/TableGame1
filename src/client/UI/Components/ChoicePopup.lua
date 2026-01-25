@@ -3,6 +3,7 @@ local Debris = game:GetService("Debris")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Lighting = game:GetService("Lighting")
 local Workspace = game:GetService("Workspace")
+local SoundService = game:GetService("SoundService")
 
 local Theme = require(script.Parent.Parent.Theme)
 local CountdownWidget = require(script.Parent.CountdownWidget)
@@ -269,6 +270,9 @@ function ChoicePopup.new(parentGui)
 	self._isClosing = false
 	self._isWaiting = false
 	self._currentTimerId = 0
+	self._reminderTask = nil -- UX FIX C: Track reminder task
+	self._opponentPickedConnection = nil -- UX FIX C: Track opponent picked listener
+	self._reminderSound = nil -- Track reminder sound instance
 	
 	return self
 end
@@ -281,6 +285,9 @@ function ChoicePopup:Show(payload, onResponse)
 	self._isClosing = false
 	self._isWaiting = false
 	self._overlay.Visible = true
+	
+	-- UX FIX C: Cancel any existing reminder
+	self:_cancelReminder()
 	
 	-- Hide status label initially
 	if self._statusLabel then
@@ -344,6 +351,20 @@ function ChoicePopup:Show(payload, onResponse)
 		self._countdown:SetVisible(true)
 	else
 		self._countdown:SetVisible(false)
+	end
+	
+	-- UX FIX C: Listen for OpponentPicked
+	if not self._opponentPickedConnection then
+		local Remotes = ReplicatedStorage:FindFirstChild("Remotes")
+		if Remotes then
+			local OpponentPicked = Remotes:FindFirstChild("OpponentPicked")
+			if OpponentPicked then
+				self._opponentPickedConnection = OpponentPicked.OnClientEvent:Connect(function(opponentName)
+					-- Opponent picked first, schedule reminder after 3 seconds
+					self:_scheduleReminder(opponentName)
+				end)
+			end
+		end
 	end
 end
 
@@ -497,19 +518,24 @@ function ChoicePopup:CreateButton(option, count, onResponse)
 			warn("[UIAnim] No animations bound to", btn.Name)
 		end
 
-		-- ZIndex fix for ripple (heuristic)
+		-- UX FIX D: ZIndex fix for ripple (ensure ripple is visible but below label)
 		if Anim_Ripple then
-			task.delay(0.05, function()
-				if not btn or not btn.Parent then return end
-				for _, d in ipairs(btn:GetDescendants()) do
-					if d:IsA("Frame") and d.ZIndex < 25 then
-						d.ZIndex = 25
-						for _, dd in ipairs(d:GetDescendants()) do
-							if dd:IsA("GuiObject") then dd.ZIndex = 25 end
+			-- Monitor for ripple frames and set their ZIndex
+			local rippleMonitor
+			rippleMonitor = btn.DescendantAdded:Connect(function(descendant)
+				if descendant:IsA("Frame") and descendant.Name ~= "Label" then
+					-- This is likely a ripple frame
+					descendant.ZIndex = 25 -- Between button (20) and label (30)
+					
+					-- Ensure ripple UICorner is also visible
+					for _, child in ipairs(descendant:GetChildren()) do
+						if child:IsA("UICorner") then
+							child.Parent = descendant -- Ensure proper parenting
 						end
 					end
 				end
 			end)
+			table.insert(self._connections, rippleMonitor)
 		end
 	end
 	
@@ -580,6 +606,9 @@ function ChoicePopup:ShowWaitingState(selectedOption)
 	if self._isWaiting or self._isClosing then return end
 	self._isWaiting = true
 	
+	-- UX FIX C: Cancel reminder when player picks
+	self:_cancelReminder()
+	
 	print("[UI] ShowWaitingState called at", os.clock())
 	
 	-- Disable all buttons
@@ -598,6 +627,7 @@ function ChoicePopup:ShowWaitingState(selectedOption)
 	-- Show waiting message
 	if self._statusLabel then
 		self._statusLabel.Text = "Waiting on opponent..."
+		self._statusLabel.TextColor3 = Color3.new(1, 1, 1) -- White text for waiting
 		self._statusLabel.Visible = true
 	end
 	
@@ -609,12 +639,143 @@ function ChoicePopup:ShowWaitingState(selectedOption)
 	end
 end
 
+-- UX FIX C: Schedule reminder after opponent picks
+function ChoicePopup:_scheduleReminder(opponentName)
+	-- Cancel any existing reminder
+	self:_cancelReminder()
+	
+	-- Schedule reminder for 3 seconds
+	self._reminderTask = task.delay(3, function()
+		if not self._isClosing and not self._isWaiting then
+			self:_showReminder()
+		end
+	end)
+	
+	print("[UI] Reminder scheduled (opponent picked first)")
+end
+
+-- UX FIX C: Cancel reminder
+function ChoicePopup:_cancelReminder()
+	if self._reminderTask then
+		task.cancel(self._reminderTask)
+		self._reminderTask = nil
+	end
+	
+	-- Stop sound if playing
+	if self._reminderSound then
+		pcall(function()
+			self._reminderSound:Stop()
+		end)
+		self._reminderSound:Destroy()
+		self._reminderSound = nil
+	end
+end
+
+-- UX FIX C: Bulletproof sound playback helper
+function ChoicePopup:_playReminderSound()
+	-- stop prior instance if any (avoid stacking)
+	if self._reminderSound then
+		pcall(function()
+			self._reminderSound:Stop()
+		end)
+		self._reminderSound:Destroy()
+		self._reminderSound = nil
+	end
+
+	local assets = ReplicatedStorage:FindFirstChild("Assets")
+	local fxFolder = assets and assets:FindFirstChild("FX")
+	local template = fxFolder and fxFolder:FindFirstChild("ReminderSound")
+
+	if not template or not template:IsA("Sound") then
+		warn("[UI] ReminderSound missing or not a Sound at ReplicatedStorage.Assets.FX.ReminderSound")
+		return
+	end
+
+	local s = template:Clone()
+	s.Name = "ReminderSound_Playing"
+	s.Parent = SoundService
+
+	-- safety: ensure it's audible
+	if s.Volume <= 0 then
+		s.Volume = 0.8
+	end
+	s.Looped = false
+
+	self._reminderSound = s
+
+	-- debug
+	print(string.format("[UI] Playing ReminderSound (time=%.2fs vol=%.2f)", s.TimeLength, s.Volume))
+
+	s:Play()
+
+	-- cleanup after it finishes (TimeLength can be 0 before load; give it a buffer)
+	Debris:AddItem(s, math.max(2, s.TimeLength + 0.5))
+end
+
+-- UX FIX C: Show reminder (pulse/shake effect)
+function ChoicePopup:_showReminder()
+	if not self._statusLabel then return end
+	
+	-- Update status label with strong message
+	self._statusLabel.Text = "⚡ PICK AN OPTION! ⚡"
+	self._statusLabel.TextColor3 = Color3.fromRGB(255, 85, 85) -- Red urgency
+	self._statusLabel.Visible = true
+	
+	print("[UI] Reminder shown")
+	self:_playReminderSound()
+	
+	-- Pulse/shake animation
+	local originalSize = self._frame.Size
+	local originalPos = self._frame.Position
+	
+	-- Shake effect
+	for i = 1, 3 do
+		task.spawn(function()
+			local offset = Vector2.new(math.random(-5, 5), math.random(-5, 5))
+			self._frame.Position = originalPos + UDim2.fromOffset(offset.X, offset.Y)
+			task.wait(0.05)
+			self._frame.Position = originalPos
+		end)
+		task.wait(0.1)
+	end
+	
+	-- Pulse effect on status label
+	for i = 1, 2 do
+		task.spawn(function()
+			local tween1 = TweenService:Create(self._statusLabel, TweenInfo.new(0.2, Enum.EasingStyle.Quad), {
+				TextSize = Theme.Sizes.TextBody * 1.3
+			})
+			tween1:Play()
+			tween1.Completed:Wait()
+			
+			local tween2 = TweenService:Create(self._statusLabel, TweenInfo.new(0.2, Enum.EasingStyle.Quad), {
+				TextSize = Theme.Sizes.TextBody
+			})
+			tween2:Play()
+		end)
+		task.wait(0.4)
+	end
+end
+
 function ChoicePopup:Hide()
 	if self._isClosing then return end
 	print("[UI] Hide() called at", os.clock())
 	self._isClosing = true
 	self._isWaiting = false
 	self._currentTimerId += 1 -- Invalidates timers
+	
+	-- UX FIX C: Cancel reminder and disconnect listener
+	self:_cancelReminder()
+	if self._opponentPickedConnection then
+		self._opponentPickedConnection:Disconnect()
+		self._opponentPickedConnection = nil
+	end
+	
+	-- Stop sound if playing
+	if self._reminderSound then 
+		self._reminderSound:Destroy()
+		self._reminderSound = nil 
+	end
 	
 	-- Remove blur when popup closes
 	removePopupEffects()

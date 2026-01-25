@@ -8,6 +8,7 @@ Toast.__index = Toast
 -- Constants
 local SHOW_DURATION = 0.15
 local HIDE_DURATION = 0.12
+local FAST_HIDE_DURATION = 0.12 -- Step D: Fast hide duration
 
 function Toast.new(parentGui)
 	local self = setmetatable({}, Toast)
@@ -140,13 +141,15 @@ function Toast:_animateShow()
 end
 
 -- Helper: Animate to hidden state
-function Toast:_animateHide(onComplete)
+function Toast:_animateHide(onComplete, duration)
 	if not (self._frame and self._frame.Parent) then return end
+	
+	local hideDuration = duration or HIDE_DURATION
 	
 	-- Cancel only ongoing tweens (do NOT cancel hide task here)
 	self:_cancelTweens()
 	
-	local hideInfo = TweenInfo.new(HIDE_DURATION, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+	local hideInfo = TweenInfo.new(hideDuration, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
 	
 	-- Tween frame position + background
 	local frameTween = TweenService:Create(self._frame, hideInfo, {
@@ -215,6 +218,33 @@ function Toast:Show(text, duration)
 			end
 		end)
 	end)
+end
+
+-- Step B: Implement HideFast
+function Toast:HideFast()
+	self:_cancelHideTask()
+	self:_animateHide(function()
+		if self._frame and self._frame.Parent then
+			self._frame:Destroy()
+			self._frame = nil
+			self._label = nil
+			self._uiStroke = nil
+			self._labelStroke = nil
+		end
+	end, FAST_HIDE_DURATION)
+end
+
+-- Step B: Implement HideImmediate
+function Toast:HideImmediate()
+	self:_cancelHideTask()
+	self:_cancelTweens()
+	if self._frame then
+		self._frame:Destroy()
+		self._frame = nil
+		self._label = nil
+		self._uiStroke = nil
+		self._labelStroke = nil
+	end
 end
 
 function Toast:Destroy()

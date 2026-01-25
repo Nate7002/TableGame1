@@ -150,6 +150,7 @@ end
 --   didBothLose = boolean? (both lose)
 --   rewardCash = number (total cash reward)
 --   wasAborted = boolean? (no-contest/abort)
+--   isNeutral = boolean? (no-contest; do not change stats)
 --   reason = string? (optional debug)
 -- }
 function StatsService.ApplyRoundResult(playerA, playerB, resultPayload)
@@ -165,6 +166,12 @@ function StatsService.ApplyRoundResult(playerA, playerB, resultPayload)
 		return
 	end
 	processedRounds[roundId] = true
+	
+	-- Neutral: no rewards, no stat changes (both timeout)
+	if resultPayload.isNeutral then
+		print("[StatsService] Neutral round - no stats applied")
+		return
+	end
 	
 	-- Abort: no rewards, no stat changes
 	if resultPayload.wasAborted then

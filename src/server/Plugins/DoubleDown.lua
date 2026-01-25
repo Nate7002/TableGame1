@@ -11,16 +11,60 @@ local DoubleDown = {}
 local STAGE1_TIME = 15
 local STAGE2_TIME = 10
 
+-- Stage options (for random selection)
+local STAGE1_OPTIONS = {"SPLIT", "STEAL", "DOUBLEDOWN"}
+local STAGE2_OPTIONS = {"SPLIT", "STEAL"}
+
+-- Helper: Normalize choices and handle timeouts (Bulletproof Hardening)
+local function normalizeStageChoices(playerA, choiceA, didPickA, playerB, choiceB, didPickB, stage)
+	local validOptions = (stage == 1) and STAGE1_OPTIONS or STAGE2_OPTIONS
+	
+	print(string.format("[DoubleDown] Stage%d choices (raw): %s=%s (picked=%s) %s=%s (picked=%s)", 
+		stage, playerA.Name, tostring(choiceA), tostring(didPickA), playerB.Name, tostring(choiceB), tostring(didPickB)))
+	
+	-- Problem 1: Neutral ONLY when BOTH are raw TIMEOUT and NEITHER picked
+	if not didPickA and not didPickB and choiceA == "TIMEOUT" and choiceB == "TIMEOUT" then
+		print(string.format("[DoubleDown] Stage%d normalization: neutral=true (both timed out)", stage))
+		return {
+			isNeutral = true,
+			finalA = "TIMEOUT",
+			finalB = "TIMEOUT"
+		}
+	end
+	
+	-- Rule: If ONE is TIMEOUT (or didn't pick), randomize only that one
+	local finalA = choiceA
+	local finalB = choiceB
+	
+	if not didPickA then
+		finalA = validOptions[math.random(1, #validOptions)]
+		print(string.format("[DoubleDown] %s timed out -> random choice: %s (stage %d)", playerA.Name, finalA, stage))
+	elseif not didPickB then
+		finalB = validOptions[math.random(1, #validOptions)]
+		print(string.format("[DoubleDown] %s timed out -> random choice: %s (stage %d)", playerB.Name, finalB, stage))
+	end
+	
+	print(string.format("[DoubleDown] Stage%d normalization: neutral=false finalA=%s finalB=%s", stage, finalA, finalB))
+	return {
+		isNeutral = false,
+		finalA = finalA,
+		finalB = finalB
+	}
+end
+
 -- Helper: Get choices from both players in parallel
-local function getChoices(players, stage, currentReward, rarity, sfxOverride)
+local function getChoices(players, stage, currentReward, rarity, sfxOverride, tableModel)
 	local choices = {}
+	local didPick = {} -- [player] = boolean
 	local threads = 0
 	local thread = coroutine.running()
+	local firstPicker = nil -- UX FIX C: Track who picked first
 	
 	local duration = (stage == 1) and STAGE1_TIME or STAGE2_TIME
 	local endTime = workspace:GetServerTimeNow() + duration
 	
 	local options
+	local validOptionIds = {}
 	if stage == 1 then
 		options = {
 			{ id = "SPLIT", label = "Split" },
@@ -33,21 +77,46 @@ local function getChoices(players, stage, currentReward, rarity, sfxOverride)
 			{ id = "STEAL", label = "Steal" }
 		}
 	end
+	for _, opt in ipairs(options) do validOptionIds[opt.id] = true end
+	
+	-- UX FIX C: Setup remote for OpponentPicked
+	local Remotes = game:GetService("ReplicatedStorage"):WaitForChild("Remotes")
+	local OpponentPicked = Remotes:FindFirstChild("OpponentPicked")
 	
 	for _, player in ipairs(players) do
 		threads += 1
 		task.spawn(function()
+			-- Problem 1: Generate unique promptId per player per stage
+			local promptId = string.format("%s_S%d_%d_%0.6f", 
+				tableModel and tableModel.Name or "Table", 
+				stage, 
+				player.UserId, 
+				os.clock())
+			
 			local choice = UIService.PromptChoice(player, {
+				promptId = promptId, -- Problem 1: Pass promptId
 				title = stage == 1 and "Double Down" or "SUDDEN DEATH",
 				description = string.format("<font color=\"rgb(85, 255, 127)\">Reward: $%d</font>\nChoose your move!", currentReward),
 				options = options,
 				timeout = duration,
 				endTime = endTime,
-				rarity = rarity, -- Pass rarity for UI tint
-				sfx = sfxOverride -- Pass Phase SFX
+				rarity = rarity,
+				sfx = sfxOverride
 			})
 			
-			choices[player] = choice or "TIMEOUT" -- Mark as TIMEOUT if nil
+			choices[player] = choice or "TIMEOUT"
+			didPick[player] = (choice ~= nil and validOptionIds[choice] == true)
+			
+			-- UX FIX C: If this is the first picker, notify the opponent
+			if not firstPicker and didPick[player] then
+				firstPicker = player
+				-- Find opponent
+				local opponent = (player == players[1]) and players[2] or players[1]
+				if opponent and opponent.Parent and OpponentPicked then
+					OpponentPicked:FireClient(opponent, player.Name)
+					print(string.format("[DoubleDown] %s picked first, notified %s", player.Name, opponent.Name))
+				end
+			end
 			
 			threads -= 1
 			if threads == 0 then
@@ -60,14 +129,7 @@ local function getChoices(players, stage, currentReward, rarity, sfxOverride)
 		coroutine.yield()
 	end
 	
-	-- Log choices
-	local logParts = {}
-	for _, p in ipairs(players) do
-		table.insert(logParts, string.format("%s=%s", p.Name, choices[p]))
-	end
-	print(string.format("[RoundService] Stage%d choices: %s", stage, table.concat(logParts, " ")))
-	
-	return choices
+	return choices, didPick
 end
 
 function DoubleDown.Run(context)
@@ -92,7 +154,7 @@ function DoubleDown.Run(context)
 			return session and (session.spinStopFlag or session.abortFlag)
 		end
 		-- Cinematic fired inside SpinTable now
-		spinItem, spinCleanup = SpinService.SpinTable(tableModel, SpinConfig, stopFlag)
+		spinItem, spinCleanup = SpinService.SpinTable(tableModel, SpinConfig, stopFlag, session.cineToken)
 		-- Store cleanup function in session for abort path
 		if session then
 			session.spinCleanup = spinCleanup
@@ -152,36 +214,28 @@ function DoubleDown.Run(context)
 	print("[DoubleDown] Showing Stage1 UI to players")
 	
 	-- Stage 1
-	local choices1 = getChoices(players, 1, reward, rarity, phase1Sfx)
+	local rawChoices1, didPick1 = getChoices(players, 1, reward, rarity, phase1Sfx, tableModel)
 	print("[DoubleDown] Both choices received at", os.clock())
-	local c1, c2 = choices1[p1], choices1[p2]
+	
+	-- Normalize Stage 1
+	local norm1 = normalizeStageChoices(p1, rawChoices1[p1], didPick1[p1], p2, rawChoices1[p2], didPick1[p2], 1)
+	local c1, c2 = norm1.finalA, norm1.finalB
 	
 	local finalChoices = {[p1.UserId] = c1, [p2.UserId] = c2}
 	local winners = {}
 	local outcome = "None"
 	local finalReward = reward
 	
-	-- Check Timeouts First
-	if c1 == "TIMEOUT" or c2 == "TIMEOUT" then
-		spinCleanup() -- Clean up visuals
-		if c1 == "TIMEOUT" and c2 == "TIMEOUT" then
-			outcome = "BOTH_TIMEOUT"
-			winners = {}
-			finalReward = 0
-		elseif c1 == "TIMEOUT" then
-			outcome = "P1_TIMEOUT"
-			winners = {p2} -- P2 wins by default
-		else -- c2 == TIMEOUT
-			outcome = "P2_TIMEOUT"
-			winners = {p1} -- P1 wins by default
-		end
-		
+	-- Handle Neutral Stage 1 (Both Timeout)
+	if norm1.isNeutral then
+		spinCleanup()
 		return {
 			ok = true,
 			data = {
-				outcome = outcome,
-				reward = finalReward,
-				winners = winners,
+				outcome = "NEUTRAL_TIMEOUT",
+				neutral = true,
+				reward = 0,
+				winners = {},
 				choices = finalChoices
 			}
 		}
@@ -202,12 +256,8 @@ function DoubleDown.Run(context)
 			session.state = "STAGE2"
 		end
 		
-		-- DO NOT call spinCleanup() here - keep reward item alive through Stage 2
-		-- spinCleanup() will be called at the end of the round
-		
 		-- Stage 2: Sudden Death (Split/Steal only)
-		-- Play DoubleDownSound ONLY here (Phase 2 start)
-		local choices2 = getChoices(players, 2, reward * 2, rarity, "DoubleDownSound")
+		local rawChoices2, didPick2 = getChoices(players, 2, reward * 2, rarity, "DoubleDownSound", tableModel)
 		
 		-- Check abort flag after Stage 2 choices
 		if session and session.abortFlag then
@@ -216,29 +266,33 @@ function DoubleDown.Run(context)
 		end 
 		finalReward = reward * 2
 		
-		local sc1, sc2 = choices2[p1], choices2[p2]
+		-- Normalize Stage 2
+		local norm2 = normalizeStageChoices(p1, rawChoices2[p1], didPick2[p1], p2, rawChoices2[p2], didPick2[p2], 2)
+		local sc1, sc2 = norm2.finalA, norm2.finalB
+		
 		finalChoices[p1.UserId] = sc1 .. "_S2"
 		finalChoices[p2.UserId] = sc2 .. "_S2"
 		
-		-- Check Timeouts Stage 2
-		if sc1 == "TIMEOUT" or sc2 == "TIMEOUT" then
+		-- Handle Neutral Stage 2 (Both Timeout)
+		if norm2.isNeutral then
 			spinCleanup()
-			if sc1 == "TIMEOUT" and sc2 == "TIMEOUT" then
-				outcome = "BOTH_TIMEOUT_S2"
-				winners = {}
-				finalReward = 0
-			elseif sc1 == "TIMEOUT" then
-				outcome = "P1_TIMEOUT_S2"
-				winners = {p2}
-			else
-				outcome = "P2_TIMEOUT_S2"
-				winners = {p1}
-			end
+			return {
+				ok = true,
+				data = {
+					outcome = "NEUTRAL_TIMEOUT",
+					neutral = true,
+					reward = 0,
+					winners = {},
+					choices = finalChoices
+				}
+			}
+		end
+
 		-- Resolve Stage 2 (Standard Split/Steal)
-		elseif sc1 == "SPLIT" and sc2 == "SPLIT" then
+		if sc1 == "SPLIT" and sc2 == "SPLIT" then
 			outcome = "SPLIT_S2"
-			winners = {p1, p2} -- Share 50% of 2x (so original reward each)
-			finalReward = finalReward / 2 -- Each gets half
+			winners = {p1, p2}
+			finalReward = finalReward / 2
 		elseif sc1 == "STEAL" and sc2 == "SPLIT" then
 			outcome = "STEAL_P1_S2"
 			winners = {p1}
@@ -253,16 +307,6 @@ function DoubleDown.Run(context)
 		
 	else
 		-- Resolve Stage 1
-		-- Outcome Mapping:
-		-- SPLIT vs SPLIT     -> SPLIT (Both Win 50%)
-		-- SPLIT vs STEAL     -> STEAL_P2 (Steal Wins 100%)
-		-- STEAL vs SPLIT     -> STEAL_P1 (Steal Wins 100%)
-		-- STEAL vs STEAL     -> CRASH (Both Lose 0%)
-		-- DD    vs SPLIT     -> SPLIT_P2 (Split Beats DD) <-- FIXED: Split wins vs DD
-		-- SPLIT vs DD        -> SPLIT_P1 (Split Beats DD) <-- FIXED: Split wins vs DD
-		-- DD    vs STEAL     -> CRASH_DD (Both Lose)      <-- FIXED: DD vs Steal = Crash
-		-- STEAL vs DD        -> CRASH_DD (Both Lose)      <-- FIXED: DD vs Steal = Crash
-		
 		if c1 == "SPLIT" and c2 == "SPLIT" then
 			outcome = "SPLIT"
 			winners = {p1, p2}
@@ -281,11 +325,11 @@ function DoubleDown.Run(context)
 			winners = {}
 			finalReward = 0
 			
-		-- Double Down Interactions (Updated)
+		-- Double Down Interactions
 		elseif c1 == "DOUBLEDOWN" and c2 == "SPLIT" then
 			outcome = "SPLIT_P2"
 			winners = {p2}
-			finalReward = reward -- Winner takes regular pot, DD loses
+			finalReward = reward
 			
 		elseif c1 == "SPLIT" and c2 == "DOUBLEDOWN" then
 			outcome = "SPLIT_P1"
@@ -306,13 +350,15 @@ function DoubleDown.Run(context)
 	
 	spinCleanup() -- Clean up at end of logic
 	
+	print(string.format("[DoubleDown] Outcome decided: %s", outcome))
 	return {
 		ok = true,
 		data = {
 			outcome = outcome,
 			reward = finalReward,
 			winners = winners,
-			choices = finalChoices
+			choices = finalChoices,
+			neutral = (outcome == "NEUTRAL_TIMEOUT")
 		}
 	}
 end

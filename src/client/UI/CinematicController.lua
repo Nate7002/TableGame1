@@ -4,6 +4,8 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Lighting = game:GetService("Lighting")
 local Workspace = game:GetService("Workspace")
 local Players = game:GetService("Players")
+local SoundService = game:GetService("SoundService")
+local Debris = game:GetService("Debris")
 
 local CinematicController = {}
 
@@ -18,6 +20,7 @@ local savedCameraState = nil
 local isCinematicActive = false
 local frozenCFrame = nil -- Captured CFrame for freeze frame
 local currentToken = nil -- Token to make Stop() idempotent
+local currentSound = nil -- Spinning sound instance
 
 -- Helper: Get Anchor BasePart from SpinDisplay (prefer ItemAnchor > BillboardAnchor > first BasePart)
 local function getAnchorPart(tableModel)
@@ -71,6 +74,10 @@ local function _cleanupInternal()
 		pcall(function() currentRig:Destroy() end)
 		currentRig = nil
 	end
+	-- Note: Sound is NOT cleaned up here automatically if we want it to persist until card
+	-- But for safety, if _cleanupInternal is called (e.g. abort), we should probably stop it
+	-- The user wants it to loop until card pops up.
+	-- If _cleanupInternal is called from Stop(), we handle sound there.
 	isCinematicActive = false
 	frozenCFrame = nil
 	currentToken = nil
@@ -291,6 +298,19 @@ function CinematicController.Play(animId, duration, tableModel)
 	
 	print("[CINE] track started, len:", track.Length)
 	
+	-- Play Spinning Sound (looped)
+	local fxFolder = assets:FindFirstChild("FX")
+	if fxFolder then
+		local spinSound = fxFolder:FindFirstChild("SpinningSound")
+		if spinSound and spinSound:IsA("Sound") then
+			if currentSound then currentSound:Destroy() end
+			currentSound = spinSound:Clone()
+			currentSound.Parent = SoundService -- Play globally (but only for this client)
+			currentSound.Looped = true -- Looping enabled
+			currentSound:Play()
+		end
+	end
+	
 	-- 8. Hold Last Frame (capture TRUE last frame, no snap)
 	local EPS = 1/60 -- ~0.0167 seconds before end
 	local freezeConnection = nil
@@ -353,6 +373,15 @@ function CinematicController.Play(animId, duration, tableModel)
 			freezeMonitor = nil
 		end
 	end)
+end
+
+function CinematicController.StopSpinSound(reason)
+	if currentSound then
+		print("[CINE] Stopping spin sound, reason:", reason)
+		currentSound:Stop()
+		currentSound:Destroy()
+		currentSound = nil
+	end
 end
 
 function CinematicController.Stop(immediate)
@@ -424,6 +453,9 @@ function CinematicController.Stop(immediate)
 		pcall(function() currentRig:Destroy() end)
 		currentRig = nil
 	end
+	
+	-- Stop sound (Safety fallback)
+	CinematicController.StopSpinSound("Stop()")
 	
 	-- Final safety: ensure camera is not stuck in Scriptable mode
 	local cam = Workspace.CurrentCamera

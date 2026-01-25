@@ -40,6 +40,11 @@ SpinTable.Items = {
 	{ id = "VoidStar", name = "Void Star", chance = 0.25, value = 50000, rarity = "Ultra" }
 }
 
+-- Public API: Get full item pool
+function SpinTable.GetPool()
+	return SpinTable.Items
+end
+
 -- Pick a random item based on weights
 function SpinTable.PickRandom()
 	local totalWeight = 0

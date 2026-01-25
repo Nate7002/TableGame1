@@ -11,10 +11,12 @@ local GRID_ORIGIN = Vector3.new(0, 2.634, 20) -- Precise height adjustment
 local SPACING_X = 15
 local SPACING_Z = 15
 local COLS = 5
+local DEBUG = false
 
 -- State
 local activeTables = {} -- [model] = { SeatA = player?, SeatB = player?, State = "Empty" }
 local tableReadyEvent = Instance.new("BindableEvent")
+local seatBaselines = {} -- [seat] = { CFrame = ... }
 
 -- Public Events
 TableService.OnTableReady = tableReadyEvent.Event
@@ -66,6 +68,8 @@ local function handleOccupantChange(model, seat, seatKey)
 		seat.Disabled = false
 	else
 		seat.Disabled = true
+		-- Reset seat position when it becomes empty
+		TableService.ResetSeat(seat, "occupant_cleared")
 	end
 
 	local player = occupant and Players:GetPlayerFromCharacter(occupant.Parent)
@@ -148,6 +152,26 @@ local function setupTable(model)
 	seatA.Disabled = true
 	seatB.Disabled = true
 	
+	-- BUG FIX A: Cache original CFrame and set network ownership
+	for _, seat in ipairs({seatA, seatB}) do
+		-- Cache baseline CFrame
+		seatBaselines[seat] = { CFrame = seat.CFrame }
+		
+		-- Force server-authoritative (prevent client network ownership from moving seat)
+		pcall(function()
+			if seat.Anchored then
+				-- Already anchored, no network owner to set
+			else
+				-- Set network owner to nil (server authority)
+				seat:SetNetworkOwner(nil)
+			end
+		end)
+		
+		if DEBUG then
+			print(string.format("[TableService] Cached baseline for %s: %s", seat.Name, tostring(seat.CFrame)))
+		end
+	end
+	
 	-- 3) Prompt Config (Ensure visibility)
 	for _, prompt in ipairs({promptA, promptB}) do
 		prompt.RequiresLineOfSight = false
@@ -171,7 +195,9 @@ local function setupTable(model)
 		SeatB = nil,
 		LockedA = false,
 		LockedB = false,
-		State = "Empty"
+		State = "Empty",
+		Seats = {seatA, seatB}, -- Store reference for cleanup
+		Prompts = {promptA, promptB} -- Store for ForceUnlock
 	}
 	
 	-- Connect Prompts
@@ -231,6 +257,90 @@ local function spawnTables(parentFolder)
 end
 
 -- Public API
+
+-- Problem 3: ForceUnlockTable
+function TableService.ForceUnlockTable(tableModel, reason)
+	local data = activeTables[tableModel]
+	if not data then return end
+	
+	print(string.format("[TableService] ForceUnlockTable %s reason=%s", tableModel.Name, reason or "unknown"))
+	
+	-- Clear locks
+	data.LockedA = false
+	data.LockedB = false
+	
+	-- Process seats
+	if data.Seats then
+		for _, seat in ipairs(data.Seats) do
+			-- Temporarily enable to allow state changes
+			seat.Disabled = false
+			
+			local occupant = seat.Occupant
+			if occupant then
+				local hum = occupant.Parent:FindFirstChild("Humanoid")
+				if hum then
+					print(string.format("[TableService] Force unseating %s from %s", occupant.Parent.Name, seat.Name))
+					hum.Sit = false
+					hum:ChangeState(Enum.HumanoidStateType.GettingUp)
+				end
+			end
+			
+			-- Reset to baseline
+			TableService.ResetSeat(seat, "ForceUnlock")
+			
+			-- Re-disable after delay if no occupant
+			task.delay(0.2, function()
+				if not seat.Occupant then
+					seat.Disabled = true
+				end
+			end)
+		end
+	end
+	
+	-- Restore prompts
+	if data.Prompts then
+		for _, prompt in ipairs(data.Prompts) do
+			prompt.Enabled = true
+		end
+	end
+	
+	-- Clear state
+	data.SeatA = nil
+	data.SeatB = nil
+	updateTableState(tableModel)
+end
+
+-- BUG FIX A: ResetSeat function to restore seat to original position
+function TableService.ResetSeat(seat, reason)
+	if not seat or not seat.Parent then return end
+	
+	local baseline = seatBaselines[seat]
+	if not baseline then
+		if DEBUG then
+			warn(string.format("[TableService] ResetSeat: no baseline for %s", seat:GetFullName()))
+		end
+		return
+	end
+	
+	local beforeCF = seat.CFrame
+	seat.CFrame = baseline.CFrame
+	
+	if DEBUG then
+		print(string.format("[TableService] ResetSeat: %s reason=%s before=%s after=%s", 
+			seat.Name, reason or "unknown", tostring(beforeCF), tostring(seat.CFrame)))
+	end
+end
+
+-- BUG FIX A: ResetTableSeats - resets all seats for a table (called on match end)
+function TableService.ResetTableSeats(tableModel, reason)
+	local data = activeTables[tableModel]
+	if not data or not data.Seats then return end
+	
+	for _, seat in ipairs(data.Seats) do
+		TableService.ResetSeat(seat, reason)
+	end
+end
+
 function TableService.Init()
 	print("[TableService] Initializing...")
 	
@@ -249,8 +359,34 @@ function TableService.Init()
 		end
 	end
 	
+	-- UX FIX B: Setup LeaveSeat remote handler
+	local Remotes = game:GetService("ReplicatedStorage"):WaitForChild("Remotes", 5)
+	if Remotes then
+		local LeaveSeat = Remotes:FindFirstChild("LeaveSeat")
+		if LeaveSeat then
+			LeaveSeat.OnServerEvent:Connect(function(player)
+				-- Find which seat the player is in
+				if not (player and player.Character) then return end
+				
+				local humanoid = player.Character:FindFirstChild("Humanoid")
+				if not humanoid then return end
+				
+				-- Check if seated
+				if not humanoid.Sit then return end
+				
+				-- Force unseat
+				humanoid.Sit = false
+				humanoid:ChangeState(Enum.HumanoidStateType.GettingUp)
+				
+				print(string.format("[TableService] %s left seat via UI button", player.Name))
+			end)
+			print("[TableService] LeaveSeat remote handler connected")
+		else
+			warn("[TableService] LeaveSeat remote not found")
+		end
+	end
+	
 	print("[TableService] Ready.")
 end
 
 return TableService
-
