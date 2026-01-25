@@ -292,7 +292,7 @@ function DoubleDown.Run(context)
 		if sc1 == "SPLIT" and sc2 == "SPLIT" then
 			outcome = "SPLIT_S2"
 			winners = {p1, p2}
-			finalReward = finalReward / 2
+			-- finalReward stays as-is (doubled POT, StatsService will split)
 		elseif sc1 == "STEAL" and sc2 == "SPLIT" then
 			outcome = "STEAL_P1_S2"
 			winners = {p1}
@@ -310,7 +310,7 @@ function DoubleDown.Run(context)
 		if c1 == "SPLIT" and c2 == "SPLIT" then
 			outcome = "SPLIT"
 			winners = {p1, p2}
-			finalReward = reward / 2
+			finalReward = reward -- POT, StatsService will split
 			
 		elseif c1 == "STEAL" and c2 == "SPLIT" then
 			outcome = "STEAL_P1"

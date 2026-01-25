@@ -148,7 +148,7 @@ end
 --   loserUserId = number? (single loser)
 --   didDraw = boolean? (both win/tie)
 --   didBothLose = boolean? (both lose)
---   rewardCash = number (total cash reward)
+--   rewardCash = number (ALWAYS the TOTAL POT - never per-winner)
 --   wasAborted = boolean? (no-contest/abort)
 --   isNeutral = boolean? (no-contest; do not change stats)
 --   reason = string? (optional debug)
@@ -208,8 +208,12 @@ function StatsService.ApplyRoundResult(playerA, playerB, resultPayload)
 	
 	-- Case 2: Draw / Split-Split (both win)
 	if resultPayload.didDraw then
-		print("[StatsService] Draw - both players win, splitting reward")
 		local splitReward = math.floor(rewardCash / 2)
+		print(string.format(
+			"[StatsService] Draw - splitting pot: $%d/2 = $%d each",
+			rewardCash,
+			splitReward
+		))
 		
 		-- Player A: cash + wins + streak
 		statsA.Cash = statsA.Cash + splitReward

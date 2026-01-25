@@ -563,6 +563,15 @@ function RoundService.StartRound(tableModel, players)
 				end
 			end
 			
+			-- Debug payout
+			print(string.format(
+				"[RoundService] PAYOUT DEBUG: outcome=%s pot=%d winners=%d/%d",
+				tostring(data.outcome),
+				tonumber(resultPayload.rewardCash) or -1,
+				#winners,
+				#participants
+			))
+			
 			-- Apply stats
 			StatsService.ApplyRoundResult(playerA, playerB, resultPayload)
 		end
@@ -587,8 +596,10 @@ function RoundService.StartRound(tableModel, players)
 						if StatsUpdate then
 							local cashDelta = 0
 							if resultPayload.didDraw then
+								-- Draw always splits the POT
 								cashDelta = math.floor((resultPayload.rewardCash or 0) / 2)
 							elseif resultPayload.winnerUserId == p.UserId then
+								-- Single winner gets full POT
 								cashDelta = resultPayload.rewardCash or 0
 							end
 							StatsUpdate:FireClient(p, stats, cashDelta)
