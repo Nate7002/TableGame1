@@ -48,9 +48,9 @@ local function getAsset(path, name)
 	-- Models are usually in ServerStorage
 	-- UI is usually in ReplicatedStorage
 	local root = ServerStorage
-	if string.sub(path, 1, 17) == "ReplicatedStorage" then
+	if string.sub(path, 1, 18) == "ReplicatedStorage" then
 		root = ReplicatedStorage
-		path = string.sub(path, 19)
+		path = string.sub(path, 20)
 	end
 	
 	local result = ResolvePath(root, path)
@@ -197,11 +197,14 @@ function SpinService.SpinTable(tableModel, spinConfig, stopFlag, cineToken)
 		-- If it's in ServerStorage, we should move it or rely on manual setup
 		local serverRig = ResolvePath(ServerStorage, "Assets/Tables/TableTemplate/Cinematics/CamRig2")
 		if serverRig then
-			-- Ensure it exists in ReplicatedStorage
-			local targetFolder = ReplicatedStorage:FindFirstChild("Assets"):FindFirstChild("Cinematics") 
-			if not targetFolder then
-				-- This part is tricky at runtime; best to ensure it exists via edit.
-				-- For now, warn if missing.
+			-- Ensure it exists in ReplicatedStorage (guard nil to avoid indexing nil)
+			local assets = ReplicatedStorage:FindFirstChild("Assets")
+			if assets then
+				local targetFolder = assets:FindFirstChild("Cinematics")
+				if not targetFolder then
+					-- This part is tricky at runtime; best to ensure it exists via edit.
+					-- For now, warn if missing.
+				end
 			end
 		end
 	end

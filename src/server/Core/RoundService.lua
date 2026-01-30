@@ -342,12 +342,23 @@ function RoundService.StartRound(tableModel, players)
 	task.spawn(function()
 		print("[RoundService] Starting DoubleDown plugin at", os.clock())
 		
+		-- Helper: disconnect player-leave listeners on any early exit (prevents connection leak)
+		local function disconnectLeaveListeners()
+			for _, p in ipairs(players) do
+				if playerLeaveConnections[p] then
+					playerLeaveConnections[p]:Disconnect()
+					playerLeaveConnections[p] = nil
+				end
+			end
+		end
+		
 		-- Validate required objects
 		if not tableModel or not tableModel.Parent then
 			warn("[RoundService] tableModel invalid, aborting")
 			for _, p in ipairs(players) do
 				resetPlayerState(p)
 			end
+			disconnectLeaveListeners()
 			activeSessions[tableModel] = nil
 			return
 		end
@@ -357,12 +368,16 @@ function RoundService.StartRound(tableModel, players)
 			for _, p in ipairs(players or {}) do
 				resetPlayerState(p)
 			end
+			disconnectLeaveListeners()
 			activeSessions[tableModel] = nil
 			return
 		end
 		
 		local session = activeSessions[tableModel]
-		if not session then return end
+		if not session then
+			disconnectLeaveListeners()
+			return
+		end
 		
 		-- Run Plugin
 		local result
@@ -380,6 +395,7 @@ function RoundService.StartRound(tableModel, players)
 			for _, p in ipairs(players) do
 				resetPlayerState(p)
 			end
+			disconnectLeaveListeners()
 			activeSessions[tableModel] = nil
 			return
 		end
@@ -394,6 +410,7 @@ function RoundService.StartRound(tableModel, players)
 			for _, p in ipairs(players) do
 				resetPlayerState(p)
 			end
+			disconnectLeaveListeners()
 			activeSessions[tableModel] = nil
 			return
 		end
@@ -405,6 +422,7 @@ function RoundService.StartRound(tableModel, players)
 				pcall(session.spinCleanup)
 				session.spinCleanup = nil
 			end
+			disconnectLeaveListeners()
 			return
 		end
 		
@@ -413,6 +431,7 @@ function RoundService.StartRound(tableModel, players)
 			for _, p in ipairs(players) do
 				resetPlayerState(p)
 			end
+			disconnectLeaveListeners()
 			activeSessions[tableModel] = nil
 			return
 		end
@@ -426,6 +445,7 @@ function RoundService.StartRound(tableModel, players)
 		-- HARDENED ENDING GUARD
 		if session.ending then
 			print("[RoundService] Skipping normal finish (session ending via other path)")
+			disconnectLeaveListeners()
 			return
 		end
 		session.ending = true
@@ -461,13 +481,14 @@ function RoundService.StartRound(tableModel, players)
 		end
 		
 		-- Release Cinematic Camera
+		-- Set ACK counter BEFORE firing so client ACKs are never dropped (race fix)
+		stoppedAcks[cineToken] = 0
 		local StopSpinCinematic = Remotes:WaitForChild("StopSpinCinematic")
 		for _, p in ipairs(players) do
 			StopSpinCinematic:FireClient(p)
 		end
 		
 		-- Problem 2: Wait for CinematicStoppedAck
-		stoppedAcks[cineToken] = 0
 		local stopWait = os.clock()
 		while stoppedAcks[cineToken] < #players and (os.clock() - stopWait) < 0.75 do
 			task.wait(0.05)
