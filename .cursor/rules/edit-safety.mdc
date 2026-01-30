@@ -1,0 +1,61 @@
+# .cursor/rules/edit-safety.mdc
+---
+description: "Edit safety, debugging discipline, cleanup, and MCP usage for TableGame1"
+alwaysApply: true
+---
+
+## Edit Safety Rules
+
+### Minimal Diffs (MANDATORY)
+- Prefer small, surgical changes over rewrites.
+- Do NOT modify unrelated files.
+- Only create new files when necessary, and wire them in cleanly.
+
+### Path Safety (MANDATORY)
+- Do not invent file paths or instances.
+- If unsure, inspect the repo tree or use MCP before editing.
+
+---
+
+## MCP Usage (Preferred)
+If `robloxstudio-mcp` is available:
+- Use it to confirm:
+  - exact file paths under `src/`
+  - instance placement (ReplicatedStorage/Remotes/etc.)
+  - where code is currently wired (init scripts)
+before applying edits.
+
+Prefer inspection over guessing.
+
+---
+
+## Debugging Discipline
+- Identify root cause before changing code.
+- Fix the smallest possible surface area.
+- Use `warn()` for invalid state (don’t fail silently).
+- Any debug prints should be behind a debug flag/config when possible.
+
+---
+
+## Lifecycle & Cleanup
+Any system that creates:
+- `RBXScriptConnection`s
+- tasks/timeouts
+- temporary `Instance`s
+
+MUST clean them up deterministically.
+
+Prefer:
+- Maid/Janitor pattern OR
+- explicit cleanup tables
+
+No infinite loops without stop conditions.
+
+---
+
+## Reliability Checklist (Mental)
+Before finalizing edits, ensure:
+- interruption-safe (leave, death, teleport, unseat)
+- re-entrancy-safe (spam-safe)
+- ordering-safe (out-of-order remotes)
+- cleanup-safe (no lingering connections/tasks)
