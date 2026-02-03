@@ -82,7 +82,7 @@ end
 local function teleportToSpawn(player)
 	if not (player and player.Character) then return end
 	
-	local spawnLocation = Workspace:FindFirstChild("SpawnLocation")
+	local spawnLocation = Workspace:FindFirstChild("SpawnLocation", true)
 	local targetCFrame = spawnLocation and spawnLocation.CFrame or CFrame.new(0, 10, 0)
 	
 	-- Add random offset to prevent stacking

@@ -6,7 +6,7 @@ local TableService = {}
 
 -- Constants
 local TABLE_TEMPLATE_PATH = "Assets/Tables/TableTemplate/TableModel"
-local MAX_TABLES = 10
+local MAX_TABLES = 12
 local GRID_ORIGIN = Vector3.new(0, 2.634, 20) -- Precise height adjustment
 local SPACING_X = 15
 local SPACING_Z = 15
@@ -29,6 +29,30 @@ local function getTemplate()
 		if not current then return nil end
 	end
 	return current
+end
+
+local function getTableSpawnParts()
+	local map = Workspace:FindFirstChild("Map")
+	if not map then return nil end
+
+	local hitboxes = map:FindFirstChild("Hitboxes")
+	if not hitboxes then return nil end
+
+	local parts = {}
+	for _, inst in ipairs(hitboxes:GetChildren()) do
+		if inst:IsA("BasePart") then
+			table.insert(parts, inst)
+		end
+	end
+
+	if #parts == 0 then return nil end
+
+	-- Hitbox01..Hitbox12 sorts correctly
+	table.sort(parts, function(a, b)
+		return a.Name < b.Name
+	end)
+
+	return parts
 end
 
 local function updateTableState(model)
@@ -230,28 +254,44 @@ local function spawnTables(parentFolder)
 		return
 	end
 
-	for i = 1, MAX_TABLES do
+	local spawnParts = getTableSpawnParts()
+
+	local totalToSpawn = MAX_TABLES
+	if spawnParts then
+		totalToSpawn = math.min(MAX_TABLES, #spawnParts)
+	end
+
+	for i = 1, totalToSpawn do
 		local tbl = template:Clone()
 		tbl.Name = string.format("Table_%02d", i)
 		tbl.Parent = parentFolder
-		
-		-- Grid Layout
-		local idx = i - 1
-		local col = idx % COLS
-		local row = math.floor(idx / COLS)
-		local x = col * SPACING_X
-		local z = row * SPACING_Z
-		
-		-- Position relative to origin
-		local pos = GRID_ORIGIN + Vector3.new(x, 0, z)
-		
-		-- Use MoveTo or manually set position to avoid burying if PrimaryPart isn't centered
-		if tbl.PrimaryPart then
-			tbl:SetPrimaryPartCFrame(CFrame.new(pos))
+
+		if spawnParts then
+			local sp = spawnParts[i]
+			if not sp then
+				-- No more hitboxes; stop spawning tables
+				break
+			end
+			tbl:PivotTo(sp.CFrame)
 		else
-			tbl:PivotTo(CFrame.new(pos))
+			-- Grid Layout (fallback when Hitboxes missing)
+			local idx = i - 1
+			local col = idx % COLS
+			local row = math.floor(idx / COLS)
+			local x = col * SPACING_X
+			local z = row * SPACING_Z
+
+			-- Position relative to origin
+			local pos = GRID_ORIGIN + Vector3.new(x, 0, z)
+
+			-- Use MoveTo or manually set position to avoid burying if PrimaryPart isn't centered
+			if tbl.PrimaryPart then
+				tbl:SetPrimaryPartCFrame(CFrame.new(pos))
+			else
+				tbl:PivotTo(CFrame.new(pos))
+			end
 		end
-		
+
 		setupTable(tbl)
 	end
 end
