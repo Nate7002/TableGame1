@@ -5,7 +5,8 @@ local RunService = game:GetService("RunService")
 local DataService = {}
 
 -- Constants
-local DATASTORE_NAME = "TableGame1_v1"
+local DATASTORE_NAMESPACE = RunService:IsStudio() and "DEV" or "PROD"
+local DATASTORE_NAME = "TableGame1_v1_" .. DATASTORE_NAMESPACE
 local KEY_PREFIX = "p_"
 local SCHEMA_VERSION = 1
 local RETRY_ATTEMPTS = 3
@@ -29,7 +30,9 @@ local function getDefaultData()
 			Cash = 0,
 			Wins = 0,
 			Streak = 0,
-			MaxStreak = 0
+			MaxStreak = 0,
+			GamesPlayed = 0,
+			TotalDonated = 0
 		},
 		updatedAt = os.time()
 	}
@@ -48,6 +51,8 @@ local function sanitizeData(data)
 	data.stats.Wins = data.stats.Wins or 0
 	data.stats.Streak = data.stats.Streak or 0
 	data.stats.MaxStreak = data.stats.MaxStreak or 0
+	data.stats.GamesPlayed = data.stats.GamesPlayed or 0
+	data.stats.TotalDonated = data.stats.TotalDonated or 0
 	data.updatedAt = data.updatedAt or os.time()
 	
 	return data
@@ -270,6 +275,14 @@ end
 function DataService.ClearCache(userId)
 	cache[userId] = nil
 	lastSaveTime[userId] = nil
+end
+
+function DataService.IsApiEnabled()
+	return apiEnabled
+end
+
+function DataService.GetNamespace()
+	return DATASTORE_NAMESPACE
 end
 
 return DataService

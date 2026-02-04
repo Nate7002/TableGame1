@@ -4,18 +4,22 @@ local RoundService = require(Core:WaitForChild("RoundService"))
 local UIService = require(Core:WaitForChild("UIService"))
 local DataService = require(Core:WaitForChild("DataService"))
 local StatsService = require(Core:WaitForChild("StatsService"))
+local LeaderboardService = require(Core:WaitForChild("LeaderboardService"))
 local PluginRegistry = require(Core:WaitForChild("PluginRegistry"))
 local PluginRunner = require(Core:WaitForChild("PluginRunner"))
 local Players = game:GetService("Players")
 
 local function Start()
-	print("[GameManager] Starting Phase 1 Step 7...")
+	print("[GameManager] Starting Phase 1 Step 8...")
 	
 	-- Initialize Data Service (Step 7 - before Stats)
 	DataService.Init()
 	
 	-- Initialize Stats Service (Step 6/7)
 	StatsService.Init()
+	
+	-- Initialize Leaderboard Service (Step 8 - Weekly + Overall leaderboards)
+	LeaderboardService.Init()
 	
 	-- Initialize Table Service
 	TableService.Init()
