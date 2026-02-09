@@ -1,0 +1,82 @@
+---
+description: "Rules for wiring UI behavior and state without coupling to gameplay"
+alwaysApply: false
+---
+
+## Authority & Data Flow (MANDATORY)
+
+- UI emits intent only
+- Server or authoritative controller decides outcomes
+- UI updates only from confirmed state
+
+UI must NEVER:
+- assume success
+- mutate authoritative state
+- talk directly to datastores
+
+---
+
+## Menu Behavior Contract (TYPE 2)
+
+Menus may own:
+- open/close lifecycle
+- focus handling (Dimmer)
+- local selection state (e.g., selected item id)
+
+Menus must NEVER:
+- resolve purchases
+- equip items
+- grant rewards
+- save data
+
+Required behavior shape:
+- OpenMenu(menuId)
+- CloseMenu(menuId)
+- EmitIntent(action, payload)
+- RenderFromState(state)
+
+---
+
+## Button Binding Rules
+
+Buttons:
+- play feedback animations
+- emit intent on activation
+
+Buttons must NOT:
+- branch logic
+- resolve outcomes
+- change game state
+
+---
+
+## Interactive UI Behavior (TYPE 3)
+
+Interactive UI:
+- is created once and reused
+- is driven by a state machine
+- animates on state entry/exit only
+
+Rules:
+- animations are state-bound
+- no free-running animations
+- no UI rebuilds per state
+
+State is represented by:
+- visibility
+- color
+- gradients
+- values
+- ZIndex / transparency
+
+---
+
+## No Variant Rebuild Rule (MANDATORY)
+
+Do NOT create separate UI variants per state.
+
+Use:
+- visibility toggles
+- recolors
+- texture swaps
+- gradient changes
