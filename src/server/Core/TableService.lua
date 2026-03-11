@@ -2,6 +2,9 @@ local ServerStorage = game:GetService("ServerStorage")
 local Workspace = game:GetService("Workspace")
 local Players = game:GetService("Players")
 
+local StatsService = require(script.Parent:WaitForChild("StatsService"))
+local UIService = require(script.Parent:WaitForChild("UIService"))
+
 local TableService = {}
 
 -- Constants
@@ -14,7 +17,7 @@ local COLS = 5
 local DEBUG = false
 
 -- State
-local activeTables = {} -- [model] = { SeatA = player?, SeatB = player?, State = "Empty" }
+local activeTables = {} -- [model] = { SeatA = player?, SeatB = player?, State = "Empty", ShieldArmingOpen = boolean, SeatParts = { SeatA = Seat, SeatB = Seat } }
 local tableReadyEvent = Instance.new("BindableEvent")
 local seatBaselines = {} -- [seat] = { CFrame = ... }
 
@@ -55,6 +58,65 @@ local function getTableSpawnParts()
 	return parts
 end
 
+local function setShieldArmingWindow(model, isOpen, reason)
+	local data = activeTables[model]
+	if not data then return end
+	if data.ShieldArmingOpen == isOpen then return end
+
+	data.ShieldArmingOpen = isOpen
+end
+
+local function findPlayerTable(player)
+	if not player then
+		return nil, nil, nil
+	end
+
+	for model, data in pairs(activeTables) do
+		if data.SeatA == player then
+			return model, data, "SeatA"
+		end
+		if data.SeatB == player then
+			return model, data, "SeatB"
+		end
+	end
+
+	return nil, nil, nil
+end
+
+local function disarmPlayerOnExit(player, reason)
+	if not player then return end
+
+	StatsService.DisarmShield(player)
+end
+
+local function validateShieldArmingRequest(player)
+	if not (player and player.Character) then
+		return false, "InvalidPlayer"
+	end
+
+	local humanoid = player.Character:FindFirstChild("Humanoid")
+	if not (humanoid and humanoid.Sit) then
+		return false, "NotSeated"
+	end
+
+	local tableModel, data, seatKey = findPlayerTable(player)
+	if not data then
+		return false, "NotTrackedTable"
+	end
+
+	local expectedSeat = data.SeatParts and data.SeatParts[seatKey]
+	local currentSeat = humanoid.SeatPart
+	if expectedSeat and currentSeat ~= expectedSeat then
+		return false, "SeatMismatch", tableModel, data
+	end
+
+	if not data.ShieldArmingOpen then
+		return false, "ArmingWindowClosed", tableModel, data
+	end
+
+	return true, nil, tableModel, data
+end
+
 local function updateTableState(model)
 	local data = activeTables[model]
 	if not data then return end
@@ -85,6 +147,12 @@ local function handleOccupantChange(model, seat, seatKey)
 	if not data then return end
 	
 	local occupant = seat.Occupant
+	local previousPlayer = data[seatKey]
+	local player = occupant and Players:GetPlayerFromCharacter(occupant.Parent)
+
+	if previousPlayer and previousPlayer ~= player then
+		disarmPlayerOnExit(previousPlayer, "occupant_cleared_" .. seatKey)
+	end
 	
 	-- Manage Seat.Disabled:
 	-- If occupied, keep Enabled. If empty, Disable to prevent touch-sitting.
@@ -95,8 +163,6 @@ local function handleOccupantChange(model, seat, seatKey)
 		-- Reset seat position when it becomes empty
 		TableService.ResetSeat(seat, "occupant_cleared")
 	end
-
-	local player = occupant and Players:GetPlayerFromCharacter(occupant.Parent)
 	
 	data[seatKey] = player
 	updateTableState(model)
@@ -123,8 +189,6 @@ local function handleSitRequest(model, seat, player, sideKey)
 			end
 		end)
 
-		print(string.format("[TableService] Force sitting %s in %s", player.Name, model.Name))
-		
 		-- 1. Enable seat so Sit() works
 		seat.Disabled = false
 		
@@ -220,6 +284,11 @@ local function setupTable(model)
 		LockedA = false,
 		LockedB = false,
 		State = "Empty",
+		ShieldArmingOpen = true,
+		SeatParts = {
+			SeatA = seatA,
+			SeatB = seatB,
+		},
 		Seats = {seatA, seatB}, -- Store reference for cleanup
 		Prompts = {promptA, promptB} -- Store for ForceUnlock
 	}
@@ -298,16 +367,33 @@ end
 
 -- Public API
 
+function TableService.IsPlayerStillSeatedAtTable(tableModel, player)
+	local data = activeTables[tableModel]
+	if not data then return false, "TableNotTracked" end
+	if not (player and player.Parent and player.Character) then return false, "InvalidPlayer" end
+	local humanoid = player.Character:FindFirstChild("Humanoid")
+	if not (humanoid and humanoid.Sit) then return false, "NotSeated" end
+	local seatKey = (data.SeatA == player) and "SeatA" or (data.SeatB == player) and "SeatB" or nil
+	if not seatKey then return false, "NotAtThisTable" end
+	local expectedSeat = (data.SeatParts and data.SeatParts[seatKey]) or (data.Seats and (seatKey == "SeatA" and data.Seats[1] or data.Seats[2]))
+	if expectedSeat and humanoid.SeatPart ~= expectedSeat then return false, "SeatMismatch" end
+	return true
+end
+
 -- Problem 3: ForceUnlockTable
 function TableService.ForceUnlockTable(tableModel, reason)
 	local data = activeTables[tableModel]
 	if not data then return end
 	
-	print(string.format("[TableService] ForceUnlockTable %s reason=%s", tableModel.Name, reason or "unknown"))
-	
 	-- Clear locks
 	data.LockedA = false
 	data.LockedB = false
+
+	for _, trackedPlayer in ipairs({data.SeatA, data.SeatB}) do
+		if trackedPlayer then
+			disarmPlayerOnExit(trackedPlayer, "force_unlock_" .. tostring(reason or "unknown"))
+		end
+	end
 	
 	-- Process seats
 	if data.Seats then
@@ -319,7 +405,6 @@ function TableService.ForceUnlockTable(tableModel, reason)
 			if occupant then
 				local hum = occupant.Parent:FindFirstChild("Humanoid")
 				if hum then
-					print(string.format("[TableService] Force unseating %s from %s", occupant.Parent.Name, seat.Name))
 					hum.Sit = false
 					hum:ChangeState(Enum.HumanoidStateType.GettingUp)
 				end
@@ -347,6 +432,7 @@ function TableService.ForceUnlockTable(tableModel, reason)
 	-- Clear state
 	data.SeatA = nil
 	data.SeatB = nil
+	setShieldArmingWindow(tableModel, true, "force_unlock_" .. tostring(reason or "unknown"))
 	updateTableState(tableModel)
 end
 
@@ -381,6 +467,10 @@ function TableService.ResetTableSeats(tableModel, reason)
 	end
 end
 
+function TableService.CloseShieldArmingWindow(tableModel)
+	setShieldArmingWindow(tableModel, false, "round_start")
+end
+
 function TableService.Init()
 	print("[TableService] Initializing...")
 	
@@ -393,7 +483,6 @@ function TableService.Init()
 	if #tablesFolder:GetChildren() == 0 then
 		spawnTables(tablesFolder)
 	else
-		print("[TableService] Found existing tables. Hooking up...")
 		for _, tbl in ipairs(tablesFolder:GetChildren()) do
 			setupTable(tbl)
 		end
@@ -413,16 +502,65 @@ function TableService.Init()
 				
 				-- Check if seated
 				if not humanoid.Sit then return end
+
+				local tableModel = select(1, findPlayerTable(player))
+				if tableModel then
+					disarmPlayerOnExit(player, "leave_seat")
+				end
 				
 				-- Force unseat
 				humanoid.Sit = false
 				humanoid:ChangeState(Enum.HumanoidStateType.GettingUp)
-				
-				print(string.format("[TableService] %s left seat via UI button", player.Name))
 			end)
 			print("[TableService] LeaveSeat remote handler connected")
 		else
 			warn("[TableService] LeaveSeat remote not found")
+		end
+
+		local UseShield = Remotes:FindFirstChild("UseShield")
+		local UseShieldFailed = Remotes:FindFirstChild("UseShieldFailed")
+		if UseShield then
+			UseShield.OnServerEvent:Connect(function(player)
+				if not player then return end
+
+				local shields = StatsService.GetShieldCount(player)
+				local isValid, failureReason = validateShieldArmingRequest(player)
+
+				if not isValid then
+					warn(string.format("[Shield] Rejected shield arm for %s: %s", player.Name, failureReason))
+					if UseShieldFailed then
+						UseShieldFailed:FireClient(player, failureReason)
+					end
+					return
+				end
+
+				if shields <= 0 then
+					warn("[Shield] Player tried to use shield but has none:", player.Name)
+					if UseShieldFailed then
+						UseShieldFailed:FireClient(player, "NoShields")
+					end
+					return
+				end
+
+				if StatsService.IsShieldArmed(player) then
+					warn("[Shield] Shield already armed:", player.Name)
+					if UseShieldFailed then
+						UseShieldFailed:FireClient(player, "AlreadyArmed")
+					end
+					return
+				end
+
+				local success = StatsService.ArmShield(player)
+
+				if success then
+					UIService.FireShieldArmed(player)
+				elseif UseShieldFailed then
+					UseShieldFailed:FireClient(player, "NoShields")
+				end
+			end)
+			print("[TableService] UseShield remote handler connected")
+		else
+			warn("[TableService] UseShield remote not found")
 		end
 	end
 	

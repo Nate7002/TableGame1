@@ -3,6 +3,7 @@ local Workspace = game:GetService("Workspace")
 
 local Core = script.Parent
 local FXService = require(Core.FXService)
+local ModifierService = require(Core.ModifierService)
 local PluginRunner = require(Core.PluginRunner)
 local StatsService = require(Core.StatsService)
 local TableService = require(Core.TableService) -- BUG FIX A: Seat reset integration
@@ -59,6 +60,21 @@ local function formatResultSummary(resultPayload, participants, winnersArray, lo
 	end
 	
 	return summary
+end
+
+local function playersToUniqueUserIds(playersArray)
+	local userIds = {}
+	local seen = {}
+
+	for _, player in ipairs(playersArray or {}) do
+		local userId = player and player.UserId
+		if userId and not seen[userId] then
+			seen[userId] = true
+			table.insert(userIds, userId)
+		end
+	end
+
+	return userIds
 end
 
 local function freezePlayer(player, shouldFreeze)
@@ -140,20 +156,20 @@ local function ejectWinner(player)
 	end
 end
 
--- Helper: Validate players are still seated and ready
+-- Helper: Validate players are still seated and ready (uses TableService for table-aware seat check)
 local function validatePlayersSeated(tableModel, players)
 	if not (tableModel and tableModel.Parent) then
 		return false, "Table invalid"
 	end
 	
 	for _, player in ipairs(players) do
-		if not (player and player.Parent and player.Character) then
+		if not (player and player.Parent) then
 			return false, player and (player.Name .. " disconnected") or "Player invalid"
 		end
 		
-		local hum = player.Character:FindFirstChild("Humanoid")
-		if not (hum and hum.Sit) then
-			return false, (player.Name .. " unseated")
+		local ok, reason = TableService.IsPlayerStillSeatedAtTable(tableModel, player)
+		if not ok then
+			return false, (player.Name .. " " .. (reason or "unseated"))
 		end
 	end
 	
@@ -252,6 +268,16 @@ function RoundService.HandleTableReady(tableModel, players)
 		if not valid then
 			print(string.format("[RoundService] Countdown cancelled: %s (%s)", tableModel.Name, reason))
 			activeCountdowns[tableModel] = nil
+			if Remotes then
+				local MatchCountdownCancel = Remotes:FindFirstChild("MatchCountdownCancel")
+				if MatchCountdownCancel then
+					for _, p in ipairs(players) do
+						if p and p.Parent then
+							MatchCountdownCancel:FireClient(p, reason)
+						end
+					end
+				end
+			end
 			return
 		end
 		
@@ -270,6 +296,24 @@ function RoundService.HandleTableReady(tableModel, players)
 		-- Step D: Wait only 0.05s tiny buffer
 		task.wait(0.05)
 		
+		-- Final gate: Re-validate after wait (catches last-second jump)
+		local valid, reason = validatePlayersSeated(tableModel, players)
+		if not valid then
+			print(string.format("[RoundService] Start aborted: %s (%s)", tableModel.Name, reason))
+			activeCountdowns[tableModel] = nil -- Explicit cleanup (already nil from line 276; belt-and-suspenders for deterministic cleanup)
+			if Remotes then
+				local MatchCountdownCancel = Remotes:FindFirstChild("MatchCountdownCancel")
+				if MatchCountdownCancel then
+					for _, p in ipairs(players) do
+						if p and p.Parent then
+							MatchCountdownCancel:FireClient(p, reason)
+						end
+					end
+				end
+			end
+			return
+		end
+		
 		RoundService.StartRound(tableModel, players)
 	end)
 end
@@ -285,6 +329,8 @@ function RoundService.StartRound(tableModel, players)
 		warn("[RoundService] Not enough players to start round.")
 		return
 	end
+
+	TableService.CloseShieldArmingWindow(tableModel)
 	
 	print(string.format("[RoundService] Starting Round for %s with %s vs %s at %0.6f", 
 		tableModel.Name, players[1].Name, players[2].Name, os.clock()))
@@ -320,7 +366,6 @@ function RoundService.StartRound(tableModel, players)
 			for _, p in ipairs(session.players) do
 				if p == leavingPlayer then
 					-- Player left mid-match
-					print("[RoundService] Player", leavingPlayer.Name, "left mid-match, state:", session.state)
 					HandleOpponentLeave(tableModel, leavingPlayer.UserId, session.state)
 					break
 				end
@@ -340,8 +385,6 @@ function RoundService.StartRound(tableModel, players)
 	
 	-- 2. Run Game Plugin (DoubleDown)
 	task.spawn(function()
-		print("[RoundService] Starting DoubleDown plugin at", os.clock())
-		
 		-- Helper: disconnect player-leave listeners on any early exit (prevents connection leak)
 		local function disconnectLeaveListeners()
 			for _, p in ipairs(players) do
@@ -417,7 +460,6 @@ function RoundService.StartRound(tableModel, players)
 		
 		-- 3. Handle Result
 		if session and session.abortFlag then
-			print("[RoundService] Match was aborted, skipping result handling")
 			if session.spinCleanup then
 				pcall(session.spinCleanup)
 				session.spinCleanup = nil
@@ -437,14 +479,12 @@ function RoundService.StartRound(tableModel, players)
 		end
 		
 		local data = result.data
-		print(string.format("[RoundService] DoubleDown Result: Outcome=%s, Reward=%d", data.outcome or "nil", data.reward or 0))
 		
 		-- Problem 5: Neutral round behavior
 		local isNeutral = (data.neutral == true) or (data.outcome == "NEUTRAL_TIMEOUT")
 		
 		-- HARDENED ENDING GUARD
 		if session.ending then
-			print("[RoundService] Skipping normal finish (session ending via other path)")
 			disconnectLeaveListeners()
 			return
 		end
@@ -453,10 +493,6 @@ function RoundService.StartRound(tableModel, players)
 		-- Parse winners
 		local winners = data.winners or {}
 		local participants = players
-		
-		local winnerNamesList = {}
-		for _, w in ipairs(winners) do table.insert(winnerNamesList, w.Name) end
-		print(string.format("[RoundService] Winners: (%d/%d) %s", #winners, #participants, table.concat(winnerNamesList, ",")))
 		
 		local winnerSet = {}
 		for _, w in ipairs(winners) do winnerSet[w] = true end
@@ -467,6 +503,19 @@ function RoundService.StartRound(tableModel, players)
 				if not winnerSet[p] then table.insert(losers, p) end
 			end
 		end
+
+		local roundContext = {
+			participants = participants,
+			winners = winners,
+			losers = losers,
+			streakProtectedLosers = {},
+			shieldConsumePlayers = {},
+			shieldDisarmPlayers = {},
+			isNeutral = isNeutral,
+			outcome = data.outcome,
+			rewardCash = data.reward or 0,
+		}
+		ModifierService.ApplyRoundModifiers(roundContext)
 		
 		local soundPlayed = "None"
 		
@@ -493,8 +542,6 @@ function RoundService.StartRound(tableModel, players)
 		while stoppedAcks[cineToken] < #players and (os.clock() - stopWait) < 0.75 do
 			task.wait(0.05)
 		end
-		print(string.format("[RoundService] CinematicStoppedAck wait complete: %d/%d acks in %.2fs", 
-			stoppedAcks[cineToken], #players, os.clock() - stopWait))
 		
 		-- Problem 3: ForceUnlockTable (Deterministic cleanup)
 		TableService.ForceUnlockTable(tableModel, "match_end_resolve")
@@ -564,34 +611,29 @@ function RoundService.StartRound(tableModel, players)
 			roundId = roundId,
 			rewardCash = data.reward or 0,
 			wasAborted = false,
-			isNeutral = isNeutral
+			isNeutral = isNeutral,
+			streakProtectedLoserUserIds = {},
+			shieldConsumeUserIds = {},
+			shieldDisarmUserIds = {},
 		}
 		
 		if not isNeutral then
 			if #winners == 0 then
 				resultPayload.didBothLose = true
-			elseif #winners == #participants then
+			elseif #losers == 0 then
 				resultPayload.didDraw = true
+				resultPayload.winnerUserId = nil
+				resultPayload.loserUserId = nil
 			else
 				if #winners == 1 then
 					resultPayload.winnerUserId = winners[1].UserId
-					for _, p in ipairs(participants) do
-						if p ~= winners[1] then
-							resultPayload.loserUserId = p.UserId
-							break
-						end
-					end
+					resultPayload.loserUserId = losers[1] and losers[1].UserId or nil
 				end
 			end
-			
-			-- Debug payout
-			print(string.format(
-				"[RoundService] PAYOUT DEBUG: outcome=%s pot=%d winners=%d/%d",
-				tostring(data.outcome),
-				tonumber(resultPayload.rewardCash) or -1,
-				#winners,
-				#participants
-			))
+
+			resultPayload.streakProtectedLoserUserIds = playersToUniqueUserIds(roundContext.streakProtectedLosers)
+			resultPayload.shieldConsumeUserIds = playersToUniqueUserIds(roundContext.shieldConsumePlayers)
+			resultPayload.shieldDisarmUserIds = playersToUniqueUserIds(roundContext.shieldDisarmPlayers)
 			
 			-- Apply stats
 			StatsService.ApplyRoundResult(playerA, playerB, resultPayload)
@@ -604,8 +646,6 @@ function RoundService.StartRound(tableModel, players)
 			table.concat(resultSummary.winnerNames, ","),
 			table.concat(resultSummary.loserNames, ","),
 			resultSummary.rewardCash))
-		print(string.format("[RoundService] ACTIONS: sound=%s | respawned=[%s] | ejected=[%s]", 
-			soundPlayed, table.concat(respawned, ","), table.concat(ejected, ",")))
 		
 		-- Notify Update
 		if not isNeutral then
@@ -660,7 +700,7 @@ function RoundService.StartRound(tableModel, players)
 		end
 		
 		activeSessions[tableModel] = nil
-		print("[RoundService] Cleanup complete at", os.clock())
+		print(string.format("[RoundService] Cleanup complete: %s", tableModel.Name))
 	end)
 end
 
@@ -674,8 +714,6 @@ function RoundService.WaitForCinematicStarted(cineToken, playerCount)
 	while startedAcks[cineToken] < playerCount and (os.clock() - startWait) < 0.25 do
 		task.wait(0.05)
 	end
-	print(string.format("[RoundService] CinematicStartedAck wait complete: %d/%d acks in %0.6fs (token: %s)", 
-		startedAcks[cineToken], playerCount, os.clock() - startWait, cineToken))
 end
 
 -- Handle opponent leave based on match state
@@ -813,7 +851,7 @@ function AbortRound(tableModel, reason)
 	end
 	
 	activeSessions[tableModel] = nil
-	print("[RoundService] Abort cleanup ran for table", tableModel.Name)
+	print(string.format("[RoundService] Abort cleanup complete: %s", tableModel.Name))
 end
 
 -- Problem 2: Init ACK Listeners
@@ -825,7 +863,6 @@ local function initAckListeners()
 	CinematicStartedAck.OnServerEvent:Connect(function(player, tableKey, token)
 		if startedAcks[token] then
 			startedAcks[token] += 1
-			print(string.format("[RoundService] CinematicStartedAck from %s for %s (token: %s) at %0.6f", player.Name, tableKey, token, os.clock()))
 		end
 	end)
 	
@@ -841,7 +878,6 @@ local function initAckListeners()
 				local token = session.cineToken
 				if stoppedAcks[token] then
 					stoppedAcks[token] += 1
-					print(string.format("[RoundService] CinematicStoppedAck from %s (token: %s)", player.Name, token))
 				end
 				break
 			end

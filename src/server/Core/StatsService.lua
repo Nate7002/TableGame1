@@ -1,10 +1,36 @@
 local Players = game:GetService("Players")
 
 local DataService = require(script.Parent:WaitForChild("DataService"))
+local DebugService = require(script.Parent:WaitForChild("DebugService"))
+local UIService = require(script.Parent:WaitForChild("UIService"))
 
 local StatsService = {}
 
-local DEBUG = true
+local function snapshotStats(stats)
+	return {
+		Cash = stats.Cash,
+		Wins = stats.Wins,
+		Streak = stats.Streak,
+		MaxStreak = stats.MaxStreak,
+		GamesPlayed = stats.GamesPlayed,
+		TotalDonated = stats.TotalDonated,
+		WeeklyGamesPlayed = stats.WeeklyGamesPlayed,
+		WeeklyMaxStreak = stats.WeeklyMaxStreak,
+		WeeklyDonations = stats.WeeklyDonations,
+		WeeklyStamp = stats.WeeklyStamp,
+		Gems = stats.Gems,
+		Shields = stats.Shields,
+		FreeShieldGranted = stats.FreeShieldGranted
+	}
+end
+
+local function PushStatsUpdate(player, statsOverride)
+	if not player then return end
+	local stats = statsOverride and snapshotStats(statsOverride) or StatsService.GetStats(player)
+	if stats then
+		UIService.FireStatsUpdate(player, stats)
+	end
+end
 
 -- Stats-changed signal: fired when any stat mutates (for leaderboard sync)
 local StatsChanged = Instance.new("BindableEvent")
@@ -21,18 +47,20 @@ local DEFAULT_STATS = {
 	WeeklyGamesPlayed = 0,
 	WeeklyMaxStreak = 0,
 	WeeklyDonations = 0,
-	WeeklyStamp = ""
+	WeeklyStamp = "",
+	Gems = 0,
+	Shields = 0,
+	FreeShieldGranted = false,
 }
+
+local MAX_SHIELDS = 3
 
 -- State (in-memory, per session)
 local playerStats = {} -- [UserId] = stats table
 local processedRounds = {} -- [roundId] = true (idempotency guard)
-
-local function dprint(...)
-	if DEBUG then
-		print(...)
-	end
-end
+local activeShieldArms = {} -- [UserId] = true (armed for current round only)
+local hydratingPlayers = {} -- [UserId] = true while hydrate is running
+local hydratedPlayers = {} -- [UserId] = true after authoritative hydrate completes
 
 -- Week key: Monday 00:00 UTC, formatted YYYY_MM_DD
 local function getWeekKeyUTC(now)
@@ -60,7 +88,10 @@ local function ensureWeekly(player, stats)
 		stats.WeeklyMaxStreak = 0
 		stats.WeeklyDonations = 0
 		stats.WeeklyStamp = currentWeekKey
-		dprint(string.format("[StatsService][WeeklyReset] %s(%d) -> %s", player.Name, player.UserId, currentWeekKey))
+		DebugService.Info("STATS", "WEEKLY_RESET", {
+			userId = player.UserId,
+			newStamp = currentWeekKey
+		})
 		return true
 	end
 	return false
@@ -80,10 +111,25 @@ local function ensureStats(player)
 			WeeklyGamesPlayed = DEFAULT_STATS.WeeklyGamesPlayed,
 			WeeklyMaxStreak = DEFAULT_STATS.WeeklyMaxStreak,
 			WeeklyDonations = DEFAULT_STATS.WeeklyDonations,
-			WeeklyStamp = DEFAULT_STATS.WeeklyStamp
+			WeeklyStamp = DEFAULT_STATS.WeeklyStamp,
+			Gems = DEFAULT_STATS.Gems,
+			Shields = DEFAULT_STATS.Shields,
+			FreeShieldGranted = DEFAULT_STATS.FreeShieldGranted
 		}
 	end
 	return playerStats[userId]
+end
+
+local function toUserIdSet(userIds)
+	local set = {}
+
+	for _, userId in ipairs(userIds or {}) do
+		if type(userId) == "number" then
+			set[userId] = true
+		end
+	end
+
+	return set
 end
 
 -- Helper: Non-blocking save after stats mutation
@@ -108,7 +154,10 @@ local function asyncSavePlayer(player, reason)
 				WeeklyGamesPlayed = stats.WeeklyGamesPlayed,
 				WeeklyMaxStreak = stats.WeeklyMaxStreak,
 				WeeklyDonations = stats.WeeklyDonations,
-				WeeklyStamp = stats.WeeklyStamp
+				WeeklyStamp = stats.WeeklyStamp,
+				Gems = stats.Gems,
+				Shields = stats.Shields,
+				FreeShieldGranted = stats.FreeShieldGranted
 			},
 			updatedAt = os.time()
 		}
@@ -116,40 +165,66 @@ local function asyncSavePlayer(player, reason)
 	end)
 end
 
+local function hydratePlayer(player, source)
+	if not (player and player.Parent) then return end
+
+	local userId = player.UserId
+	if hydratedPlayers[userId] then
+		return
+	end
+
+	if hydratingPlayers[userId] then
+		return
+	end
+
+	hydratingPlayers[userId] = true
+	local stats = ensureStats(player)
+
+	local data = DataService.LoadPlayer(player)
+
+	if data and data.stats then
+		stats.Cash = data.stats.Cash or 0
+		stats.Wins = data.stats.Wins or 0
+		stats.Streak = data.stats.Streak or 0
+		stats.MaxStreak = data.stats.MaxStreak or 0
+		stats.GamesPlayed = data.stats.GamesPlayed or 0
+		stats.TotalDonated = data.stats.TotalDonated or 0
+		stats.WeeklyGamesPlayed = data.stats.WeeklyGamesPlayed or 0
+		stats.WeeklyMaxStreak = data.stats.WeeklyMaxStreak or 0
+		stats.WeeklyDonations = data.stats.WeeklyDonations or 0
+		stats.WeeklyStamp = data.stats.WeeklyStamp or ""
+		stats.Gems = data.stats.Gems or 0
+		stats.Shields = math.max(stats.Shields or 0, data.stats.Shields or 0)
+		stats.FreeShieldGranted = data.stats.FreeShieldGranted or false
+
+		DebugService.Info("STATS", "PLAYER_HYDRATED", {
+			userId = userId,
+			source = source or "hydrate"
+		})
+	end
+
+	if ensureWeekly(player, stats) then
+		asyncSavePlayer(player, "WeeklyReset")
+		StatsChanged:Fire(player)
+	end
+
+	PushStatsUpdate(player, stats)
+	if UIService.FireShieldChanged then
+		UIService.FireShieldChanged(player, stats.Shields or 0)
+	end
+
+	hydratingPlayers[userId] = nil
+	hydratedPlayers[userId] = true
+end
+
 -- Public API
 
 function StatsService.Init()
-	print("[StatsService] Initializing...")
+	DebugService.Info("STATS", "INIT_START")
 	
 	-- Load data on player join
 	Players.PlayerAdded:Connect(function(player)
-		local data = DataService.LoadPlayer(player)
-		if data and data.stats then
-			-- Hydrate from loaded data
-			playerStats[player.UserId] = {
-				Cash = data.stats.Cash or 0,
-				Wins = data.stats.Wins or 0,
-				Streak = data.stats.Streak or 0,
-				MaxStreak = data.stats.MaxStreak or 0,
-				GamesPlayed = data.stats.GamesPlayed or 0,
-				TotalDonated = data.stats.TotalDonated or 0,
-				WeeklyGamesPlayed = data.stats.WeeklyGamesPlayed or 0,
-				WeeklyMaxStreak = data.stats.WeeklyMaxStreak or 0,
-				WeeklyDonations = data.stats.WeeklyDonations or 0,
-				WeeklyStamp = data.stats.WeeklyStamp or ""
-			}
-			print(string.format("[StatsService] Hydrated %s from datastore", player.Name))
-		else
-			-- Use defaults
-			ensureStats(player)
-		end
-
-		-- Enforce weekly reset on join
-		local stats = ensureStats(player)
-		if ensureWeekly(player, stats) then
-			asyncSavePlayer(player, "WeeklyReset")
-			StatsChanged:Fire(player)
-		end
+		hydratePlayer(player, "player_added")
 	end)
 	
 	-- Save and cleanup on player leave
@@ -178,41 +253,29 @@ function StatsService.Init()
 					WeeklyGamesPlayed = playerStats[userId].WeeklyGamesPlayed,
 					WeeklyMaxStreak = playerStats[userId].WeeklyMaxStreak,
 					WeeklyDonations = playerStats[userId].WeeklyDonations,
-					WeeklyStamp = playerStats[userId].WeeklyStamp
+					WeeklyStamp = playerStats[userId].WeeklyStamp,
+					Gems = playerStats[userId].Gems,
+					Shields = playerStats[userId].Shields,
+					FreeShieldGranted = playerStats[userId].FreeShieldGranted
 				},
 				updatedAt = os.time()
 			}
 			DataService.SavePlayer(player, payload, "PlayerRemoving")
-			
-			print(string.format("[StatsService] Saved and cleared stats for %s (UserId: %d)", playerName, userId))
 			playerStats[userId] = nil
 			DataService.ClearCache(userId)
 		end
+
+		activeShieldArms[userId] = nil
+		hydratingPlayers[userId] = nil
+		hydratedPlayers[userId] = nil
 	end)
 	
-	-- Load stats for existing players
+	-- Load stats for existing players (guarded so Studio doesn't hydrate twice)
 	for _, player in ipairs(Players:GetPlayers()) do
-		local data = DataService.LoadPlayer(player)
-		if data and data.stats then
-			playerStats[player.UserId] = {
-				Cash = data.stats.Cash or 0,
-				Wins = data.stats.Wins or 0,
-				Streak = data.stats.Streak or 0,
-				MaxStreak = data.stats.MaxStreak or 0,
-				GamesPlayed = data.stats.GamesPlayed or 0,
-				TotalDonated = data.stats.TotalDonated or 0,
-				WeeklyGamesPlayed = data.stats.WeeklyGamesPlayed or 0,
-				WeeklyMaxStreak = data.stats.WeeklyMaxStreak or 0,
-				WeeklyDonations = data.stats.WeeklyDonations or 0,
-				WeeklyStamp = data.stats.WeeklyStamp or ""
-			}
-			print(string.format("[StatsService] Hydrated %s (existing player)", player.Name))
-		else
-			ensureStats(player)
-		end
+		hydratePlayer(player, "existing_player_scan")
 	end
 	
-	print("[StatsService] Ready.")
+	DebugService.Info("STATS", "INIT_READY")
 end
 
 function StatsService.GetStats(player)
@@ -233,8 +296,161 @@ function StatsService.GetStats(player)
 		WeeklyGamesPlayed = stats.WeeklyGamesPlayed,
 		WeeklyMaxStreak = stats.WeeklyMaxStreak,
 		WeeklyDonations = stats.WeeklyDonations,
-		WeeklyStamp = stats.WeeklyStamp
+		WeeklyStamp = stats.WeeklyStamp,
+		Gems = stats.Gems,
+		Shields = stats.Shields,
+		FreeShieldGranted = stats.FreeShieldGranted
 	}
+end
+
+function StatsService.SetMaxShields(value)
+	if type(value) == "number" and value >= 0 then
+		MAX_SHIELDS = math.floor(value)
+		DebugService.Info("STATS", "MAX_SHIELDS_UPDATED", {
+			newMax = MAX_SHIELDS
+		})
+	end
+end
+
+function StatsService.GetMaxShields()
+	return MAX_SHIELDS
+end
+
+function StatsService.GetShieldCount(player)
+	if not (player and player.Parent) then return 0 end
+	local stats = ensureStats(player)
+	return stats.Shields or 0
+end
+
+-- Alias for consistency (single source of truth)
+function StatsService.GetShields(player)
+	return StatsService.GetShieldCount(player)
+end
+
+function StatsService.HasShield(player)
+	return StatsService.GetShieldCount(player) > 0
+end
+
+function StatsService.AddShields(player, amount)
+	if not (player and player.Parent) then return false end
+	if type(amount) ~= "number" or amount <= 0 then
+		DebugService.Warn("STATS", "SHIELD_ADD_INVALID", {
+			userId = player.UserId,
+			amount = amount
+		})
+		return false
+	end
+
+	local stats = ensureStats(player)
+	local previous = stats.Shields or 0
+
+	-- Allow exceeding max if already above cap (legacy scenario)
+	if previous < MAX_SHIELDS then
+		stats.Shields = previous + amount
+	else
+		DebugService.Info("STATS", "SHIELD_ADD_BLOCKED_CAP", {
+			userId = player.UserId,
+			current = previous,
+			max = MAX_SHIELDS
+		})
+		return false
+	end
+
+	asyncSavePlayer(player, "ShieldAdd")
+	StatsChanged:Fire(player)
+
+	DebugService.Info("STATS", "SHIELD_ADDED", {
+		userId = player.UserId,
+		added = amount,
+		total = stats.Shields
+	})
+
+	PushStatsUpdate(player)
+	if UIService.FireShieldChanged then
+		UIService.FireShieldChanged(player, stats.Shields)
+	end
+	return true
+end
+
+function StatsService.ConsumeShield(player)
+	if not (player and player.Parent) then return false end
+
+	local stats = ensureStats(player)
+	local current = stats.Shields or 0
+
+	if current <= 0 then
+		DebugService.Info("STATS", "SHIELD_CONSUME_FAILED", {
+			userId = player.UserId
+		})
+		return false
+	end
+
+	stats.Shields = current - 1
+
+	asyncSavePlayer(player, "ShieldConsume")
+	StatsChanged:Fire(player)
+
+	DebugService.Info("STATS", "SHIELD_CONSUMED", {
+		userId = player.UserId,
+		remaining = stats.Shields
+	})
+
+	PushStatsUpdate(player)
+	if UIService.FireShieldChanged then
+		UIService.FireShieldChanged(player, stats.Shields)
+	end
+	return true
+end
+
+function StatsService.IsShieldArmed(player)
+	if not player then return false end
+	return activeShieldArms[player.UserId] == true
+end
+
+function StatsService.ArmShield(player)
+	if not (player and player.Parent) then
+		return false
+	end
+
+	local userId = player.UserId
+
+	-- Already armed
+	if activeShieldArms[userId] then
+		DebugService.Info("STATS", "SHIELD_ARM_ALREADY", {
+			userId = userId
+		})
+		return false
+	end
+
+	-- Must own at least 1 shield to arm
+	if not StatsService.HasShield(player) then
+		DebugService.Info("STATS", "SHIELD_ARM_FAILED_NO_INVENTORY", {
+			userId = userId
+		})
+		return false
+	end
+
+	activeShieldArms[userId] = true
+
+	DebugService.Info("STATS", "SHIELD_ARMED", {
+		userId = userId
+	})
+
+	return true
+end
+
+function StatsService.DisarmShield(player)
+	if not player then return end
+
+	local userId = player.UserId
+
+	if activeShieldArms[userId] then
+		activeShieldArms[userId] = nil
+
+		DebugService.Info("STATS", "SHIELD_DISARMED", {
+			userId = userId
+		})
+	end
 end
 
 -- Apply round result and update stats
@@ -248,35 +464,47 @@ end
 --   rewardCash = number (ALWAYS the TOTAL POT - never per-winner)
 --   wasAborted = boolean? (no-contest/abort)
 --   isNeutral = boolean? (no-contest; do not change stats)
+--   streakProtectedLoserUserIds = {number}? (losers whose streak should not reset)
+--   shieldConsumeUserIds = {number}? (players whose shield inventory decrements)
+--   shieldDisarmUserIds = {number}? (players whose armed state clears)
 --   reason = string? (optional debug)
 -- }
 function StatsService.ApplyRoundResult(playerA, playerB, resultPayload)
 	-- Idempotency guard
 	local roundId = resultPayload.roundId
 	if not roundId then
-		warn("[StatsService] ApplyRoundResult called without roundId - skipping")
+		DebugService.Warn("STATS", "ROUND_MISSING_ID")
 		return
 	end
 	
 	if processedRounds[roundId] then
-		print("[StatsService] Round already processed:", roundId, "- skipping duplicate")
+		DebugService.Warn("STATS", "ROUND_DUPLICATE", {
+			roundId = roundId
+		})
 		return
 	end
 	processedRounds[roundId] = true
 	
 	-- Neutral: no rewards, no stat changes (both timeout)
 	if resultPayload.isNeutral then
-		print("[StatsService] Neutral round - no stats applied")
+		DebugService.Info("STATS", "ROUND_NEUTRAL", {
+			roundId = roundId
+		})
 		return
 	end
 	
 	-- Abort: no rewards, no stat changes
 	if resultPayload.wasAborted then
-		print("[StatsService] Round aborted - no stats applied")
+		DebugService.Info("STATS", "ROUND_ABORTED", {
+			roundId = roundId
+		})
 		return
 	end
 	
 	local rewardCash = resultPayload.rewardCash or 0
+	local streakProtectedLoserIds = toUserIdSet(resultPayload.streakProtectedLoserUserIds)
+	local shieldConsumeUserIds = toUserIdSet(resultPayload.shieldConsumeUserIds)
+	local shieldDisarmUserIds = toUserIdSet(resultPayload.shieldDisarmUserIds)
 	
 	-- Validate players
 	if not (playerA and playerA.Parent) then
@@ -302,43 +530,61 @@ function StatsService.ApplyRoundResult(playerA, playerB, resultPayload)
 		asyncSavePlayer(playerB, "WeeklyReset")
 		StatsChanged:Fire(playerB)
 	end
+
+	local roundPlayers = {playerA, playerB}
+
+	local function applyShieldPayloadEffects(player)
+		local userId = player.UserId
+
+		if shieldConsumeUserIds[userId] then
+			local consumed = StatsService.ConsumeShield(player)
+			DebugService.Info("STATS", "ROUND_SHIELD_CONSUME", {
+				roundId = roundId,
+				userId = userId,
+				consumed = consumed
+			})
+		end
+
+		if shieldDisarmUserIds[userId] then
+			StatsService.DisarmShield(player)
+		end
+	end
 	
 	-- GamesPlayed: increment for both players when round is not neutral/aborted
 	statsA.GamesPlayed = statsA.GamesPlayed + 1
 	statsB.GamesPlayed = statsB.GamesPlayed + 1
 	statsA.WeeklyGamesPlayed = statsA.WeeklyGamesPlayed + 1
 	statsB.WeeklyGamesPlayed = statsB.WeeklyGamesPlayed + 1
-	dprint(string.format(
-		"[StatsService][Weekly] GamesPlayed++ %s WGP=%d | %s WGP=%d",
-		playerA.Name,
-		statsA.WeeklyGamesPlayed,
-		playerB.Name,
-		statsB.WeeklyGamesPlayed
-	))
 	
 	-- Case 1: Both Lose (rare edge case)
 	if resultPayload.didBothLose then
-		print("[StatsService] Both players lost - resetting streaks")
-		statsA.Streak = 0
-		statsB.Streak = 0
-		
-		-- Save both players (non-blocking)
-		asyncSavePlayer(playerA, "RoundResult")
-		asyncSavePlayer(playerB, "RoundResult")
-		dprint(string.format("[StatsService][Weekly] %s WMS=%d | %s WMS=%d", playerA.Name, statsA.WeeklyMaxStreak, playerB.Name, statsB.WeeklyMaxStreak))
-		StatsChanged:Fire(playerA)
-		StatsChanged:Fire(playerB)
-		return
-	end
-	
-	-- Case 2: Draw / Split-Split (both win)
-	if resultPayload.didDraw then
+		DebugService.Info("STATS", "ROUND_BOTH_LOSE", {
+			roundId = roundId
+		})
+		if streakProtectedLoserIds[playerA.UserId] then
+			DebugService.Info("STATS", "ROUND_LOSER_STREAK_PROTECTED", {
+				roundId = roundId,
+				userId = playerA.UserId
+			})
+		else
+			statsA.Streak = 0
+		end
+
+		if streakProtectedLoserIds[playerB.UserId] then
+			DebugService.Info("STATS", "ROUND_LOSER_STREAK_PROTECTED", {
+				roundId = roundId,
+				userId = playerB.UserId
+			})
+		else
+			statsB.Streak = 0
+		end
+	elseif resultPayload.didDraw then
+		-- Case 2: Draw / Split-Split (both win)
 		local splitReward = math.floor(rewardCash / 2)
-		print(string.format(
-			"[StatsService] Draw - splitting pot: $%d/2 = $%d each",
-			rewardCash,
-			splitReward
-		))
+		DebugService.Info("STATS", "ROUND_DRAW", {
+			roundId = roundId,
+			reward = rewardCash
+		})
 		
 		-- Player A: cash + wins + streak
 		statsA.Cash = statsA.Cash + splitReward
@@ -353,74 +599,82 @@ function StatsService.ApplyRoundResult(playerA, playerB, resultPayload)
 		statsB.Streak = statsB.Streak + 1
 		statsB.MaxStreak = math.max(statsB.MaxStreak, statsB.Streak)
 		statsB.WeeklyMaxStreak = math.max(statsB.WeeklyMaxStreak, statsB.Streak)
-		
-		print(string.format("[StatsService] Split/Split: %s (+$%d, Wins:%d, Streak:%d, MaxStreak:%d)",
-			playerA.Name, splitReward, statsA.Wins, statsA.Streak, statsA.MaxStreak))
-		print(string.format("[StatsService] Split/Split: %s (+$%d, Wins:%d, Streak:%d, MaxStreak:%d)",
-			playerB.Name, splitReward, statsB.Wins, statsB.Streak, statsB.MaxStreak))
-		
-		-- Save both players (non-blocking)
-		asyncSavePlayer(playerA, "RoundResult")
-		asyncSavePlayer(playerB, "RoundResult")
-		dprint(string.format("[StatsService][Weekly] %s WMS=%d | %s WMS=%d", playerA.Name, statsA.WeeklyMaxStreak, playerB.Name, statsB.WeeklyMaxStreak))
-		StatsChanged:Fire(playerA)
-		StatsChanged:Fire(playerB)
-		return
-	end
-	
+
 	-- Case 3: Single Winner
-	local winnerId = resultPayload.winnerUserId
-	local loserId = resultPayload.loserUserId
-	
-	if not winnerId then
-		warn("[StatsService] No winner specified and not draw/abort - unexpected")
-		return
+	else
+		local winnerId = resultPayload.winnerUserId
+		
+		if not winnerId then
+			warn("[StatsService] No winner specified and not draw/abort - unexpected")
+			return
+		end
+		
+		local winner = playerA.UserId == winnerId and playerA or (playerB.UserId == winnerId and playerB or nil)
+		local loserId = resultPayload.loserUserId
+		local loser = nil
+
+		if loserId then
+			if playerA.UserId == loserId then
+				loser = playerA
+			elseif playerB.UserId == loserId then
+				loser = playerB
+			end
+		end
+
+		if not winner then
+			warn("[StatsService] Winner UserId does not match either player")
+			return
+		end
+
+		local winnerStats = ensureStats(winner)
+
+		-- Apply winner rewards
+		winnerStats.Cash = winnerStats.Cash + rewardCash
+		winnerStats.Wins = winnerStats.Wins + 1
+		winnerStats.Streak = winnerStats.Streak + 1
+		winnerStats.MaxStreak = math.max(winnerStats.MaxStreak, winnerStats.Streak)
+		winnerStats.WeeklyMaxStreak = math.max(winnerStats.WeeklyMaxStreak, winnerStats.Streak)
+
+		DebugService.Info("STATS", "ROUND_WINNER", {
+			roundId = roundId,
+			winnerId = winner.UserId,
+			reward = rewardCash,
+			streak = winnerStats.Streak
+		})
+
+		if loser then
+			local loserStats = ensureStats(loser)
+			if streakProtectedLoserIds[loser.UserId] then
+				DebugService.Info("STATS", "ROUND_LOSER_STREAK_PROTECTED", {
+					roundId = roundId,
+					loserId = loser.UserId
+				})
+			else
+				loserStats.Streak = 0
+				DebugService.Info("STATS", "ROUND_LOSER_RESET", {
+					roundId = roundId,
+					loserId = loser.UserId
+				})
+			end
+		end
 	end
-	
-	local winner = playerA.UserId == winnerId and playerA or (playerB.UserId == winnerId and playerB or nil)
-	local loser = playerA.UserId == loserId and playerA or (playerB.UserId == loserId and playerB or nil)
-	
-	if not winner then
-		warn("[StatsService] Winner UserId does not match either player")
-		return
-	end
-	
-	local winnerStats = ensureStats(winner)
-	
-	-- Apply winner rewards
-	winnerStats.Cash = winnerStats.Cash + rewardCash
-	winnerStats.Wins = winnerStats.Wins + 1
-	winnerStats.Streak = winnerStats.Streak + 1
-	winnerStats.MaxStreak = math.max(winnerStats.MaxStreak, winnerStats.Streak)
-	winnerStats.WeeklyMaxStreak = math.max(winnerStats.WeeklyMaxStreak, winnerStats.Streak)
-	
-	print(string.format("[StatsService] Winner: %s (+$%d, Wins:%d, Streak:%d, MaxStreak:%d)",
-		winner.Name, rewardCash, winnerStats.Wins, winnerStats.Streak, winnerStats.MaxStreak))
-	
-	-- Apply loser penalty (reset streak)
-	if loser then
-		local loserStats = ensureStats(loser)
-		loserStats.Streak = 0
-		print(string.format("[StatsService] Loser: %s (Streak reset to 0)", loser.Name))
+
+	for _, player in ipairs(roundPlayers) do
+		applyShieldPayloadEffects(player)
 	end
 	
 	-- Save both players (non-blocking)
-	asyncSavePlayer(winner, "RoundResult")
-	if loser then
-		asyncSavePlayer(loser, "RoundResult")
-	end
-	dprint(string.format("[StatsService][Weekly] %s WMS=%d", winner.Name, winnerStats.WeeklyMaxStreak))
-	StatsChanged:Fire(winner)
-	if loser then
-		StatsChanged:Fire(loser)
-	end
+	asyncSavePlayer(playerA, "RoundResult")
+	asyncSavePlayer(playerB, "RoundResult")
+	StatsChanged:Fire(playerA)
+	StatsChanged:Fire(playerB)
 end
 
 -- Add donation to player's TotalDonated. Validates amount > 0, saves async, fires StatsChanged.
 function StatsService.AddDonation(player, amount)
 	if not (player and player.Parent) then return end
 	if type(amount) ~= "number" or amount <= 0 then
-		warn("[StatsService] AddDonation: amount must be a positive number")
+		DebugService.Warn("STATS", "DONATION_INVALID")
 		return
 	end
 	local stats = ensureStats(player)
@@ -430,7 +684,11 @@ function StatsService.AddDonation(player, amount)
 	end
 	stats.TotalDonated = stats.TotalDonated + amount
 	stats.WeeklyDonations = stats.WeeklyDonations + amount
-	dprint(string.format("[StatsService][Weekly] %s WeeklyDonations=%s", player.Name, tostring(stats.WeeklyDonations)))
+	DebugService.Info("STATS", "DONATION_ADDED", {
+		userId = player.UserId,
+		amount = amount,
+		weeklyTotal = stats.WeeklyDonations
+	})
 	asyncSavePlayer(player, "Donation")
 	StatsChanged:Fire(player)
 end

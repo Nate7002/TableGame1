@@ -12,6 +12,9 @@ SeatUI.__index = SeatUI
 
 -- Constants
 local FAST_HIDE_DURATION = 0.12 -- Step D: Fast hide duration
+local SHIELD_HOVER_COLOR = Color3.fromRGB(80, 140, 255)
+local SHIELD_BUY_IDLE_COLOR = Color3.fromRGB(60, 175, 105)
+local SHIELD_BUY_HOVER_COLOR = Color3.fromRGB(80, 200, 120)
 
 function SeatUI.new(parentGui)
 	local self = setmetatable({}, SeatUI)
@@ -24,16 +27,32 @@ function SeatUI.new(parentGui)
 	self._isSeated = false
 	self._matchActive = false
 	self._choiceUIActive = false
+	self._shieldArmedPending = false
+	self._shieldArmed = false
+	self._shieldCount = 0
+	self._shieldMax = 0
+	self._shieldHovering = false
+	self._lastShieldRenderKey = nil
 	
 	-- Step E: Transient flag to prevent flicker during match start transition
 	self._isTransitioningToMatch = false
-	
+
+	self._shieldBtn = nil
+	self._shieldCountLabel = nil
+
 	return self
 end
 
 -- State Setters
 function SeatUI:SetSeated(seated)
 	self._isSeated = seated
+
+	if not seated then
+		self._shieldHovering = false
+		self._shieldArmedPending = false
+		self:_applyShieldButtonState()
+	end
+
 	self:_updateVisibility()
 end
 
@@ -55,9 +74,6 @@ end
 function SeatUI:_updateVisibility()
 	-- Show if seated AND not in match AND not in choice UI
 	local shouldShow = self._isSeated and not self._matchActive and not self._choiceUIActive
-	
-	print(string.format("[SeatUI] UpdateVisibility seated=%s match=%s choice=%s -> visible=%s", 
-		tostring(self._isSeated), tostring(self._matchActive), tostring(self._choiceUIActive), tostring(shouldShow)))
 	
 	if shouldShow then
 		self:Show()
@@ -134,7 +150,8 @@ function SeatUI:_createUI()
 	frame.Name = "SeatUI"
 	frame.BackgroundColor3 = Theme.Colors.Primary
 	frame.BorderSizePixel = 0
-	frame.Size = UDim2.new(0, 300, 0, 60)
+	frame.AutomaticSize = Enum.AutomaticSize.X
+	frame.Size = UDim2.new(0, 0, 0, 60)
 	frame.Position = UDim2.new(0.5, 0, 1, 10)
 	frame.AnchorPoint = Vector2.new(0.5, 0)
 	frame.Visible = false
@@ -161,10 +178,10 @@ function SeatUI:_createUI()
 	layout.Parent = frame
 	
 	local padding = Instance.new("UIPadding")
-	padding.PaddingLeft = UDim.new(0, 10)
-	padding.PaddingRight = UDim.new(0, 10)
-	padding.PaddingTop = UDim.new(0, 10)
-	padding.PaddingBottom = UDim.new(0, 10)
+	padding.PaddingLeft = UDim.new(0, 12)
+	padding.PaddingRight = UDim.new(0, 12)
+	padding.PaddingTop = UDim.new(0, 8)
+	padding.PaddingBottom = UDim.new(0, 8)
 	padding.Parent = frame
 	
 	-- Invite Friend Button
@@ -172,6 +189,39 @@ function SeatUI:_createUI()
 		self:_handleInviteFriend()
 	end)
 	inviteBtn.Parent = frame
+
+	-- Use Shield Button
+	self._shieldBtn = self:_createButton("Use Shield", function()
+		self:_handleUseShield()
+	end, {
+		disableHoverColors = true
+	})
+	self._shieldBtn.Parent = frame
+	self._shieldBtn.MouseEnter:Connect(function()
+		self._shieldHovering = true
+		self:_applyShieldButtonState()
+	end)
+	self._shieldBtn.MouseLeave:Connect(function()
+		self._shieldHovering = false
+		self:_applyShieldButtonState()
+	end)
+
+	local shieldCountLabel = Instance.new("TextLabel")
+	shieldCountLabel.Name = "ShieldCountLabel"
+	shieldCountLabel.BackgroundTransparency = 1
+	shieldCountLabel.Size = UDim2.new(0, 48, 0, 12)
+	shieldCountLabel.AnchorPoint = Vector2.new(1, 1)
+	shieldCountLabel.Position = UDim2.new(1, -6, 1, -4)
+	shieldCountLabel.Font = Theme.Font.Body
+	shieldCountLabel.Text = "0/0"
+	shieldCountLabel.TextColor3 = Theme.Colors.TextDim
+	shieldCountLabel.TextSize = Theme.Sizes.TextSmall
+	shieldCountLabel.TextXAlignment = Enum.TextXAlignment.Right
+	shieldCountLabel.ZIndex = 61
+	shieldCountLabel.Parent = self._shieldBtn
+	self._shieldCountLabel = shieldCountLabel
+
+	self:_applyShieldButtonState()
 	
 	-- Leave Seat Button
 	local leaveBtn = self:_createButton("Leave Seat", function()
@@ -180,11 +230,13 @@ function SeatUI:_createUI()
 	leaveBtn.Parent = frame
 end
 
-function SeatUI:_createButton(text, callback)
+function SeatUI:_createButton(text, callback, options)
+	options = options or {}
+
 	local btn = Instance.new("TextButton")
 	btn.BackgroundColor3 = Theme.Colors.Secondary
 	btn.BorderSizePixel = 0
-	btn.Size = UDim2.new(0, 130, 0, 40)
+	btn.Size = UDim2.new(0, 120, 0, 40)
 	btn.Font = Theme.Font.Body
 	btn.Text = text
 	btn.TextColor3 = Theme.Colors.Text
@@ -202,14 +254,15 @@ function SeatUI:_createButton(text, callback)
 	stroke.Thickness = Theme.Stroke.Thickness
 	stroke.Parent = btn
 	
-	-- Hover effect
-	btn.MouseEnter:Connect(function()
-		btn.BackgroundColor3 = Theme.Colors.Accent
-	end)
-	
-	btn.MouseLeave:Connect(function()
-		btn.BackgroundColor3 = Theme.Colors.Secondary
-	end)
+	if not options.disableHoverColors then
+		btn.MouseEnter:Connect(function()
+			btn.BackgroundColor3 = Theme.Colors.Accent
+		end)
+
+		btn.MouseLeave:Connect(function()
+			btn.BackgroundColor3 = Theme.Colors.Secondary
+		end)
+	end
 	
 	-- Click handler
 	btn.Activated:Connect(function()
@@ -221,9 +274,110 @@ function SeatUI:_createButton(text, callback)
 	return btn
 end
 
+function SeatUI:_applyShieldButtonState()
+	if not self._shieldBtn then return end
+
+	local shieldMax = math.max(0, tonumber(self._shieldMax) or 0)
+	local countText = string.format("%d/%d", self._shieldCount, shieldMax)
+	if self._shieldCountLabel then
+		self._shieldCountLabel.Text = countText
+	end
+
+	if self._shieldArmed then
+		self._shieldBtn.Text = "Shield Armed"
+		self._shieldBtn.Active = false
+		self._shieldBtn.AutoButtonColor = false
+		self._shieldBtn.BackgroundColor3 = Theme.Colors.Primary
+	else
+		self._shieldBtn.Text = self._shieldCount <= 0 and "Buy Shield" or "Use Shield"
+		self._shieldBtn.Active = not self._shieldArmedPending
+		self._shieldBtn.AutoButtonColor = false
+
+		if self._shieldCount <= 0 then
+			self._shieldBtn.BackgroundColor3 = self._shieldHovering and SHIELD_BUY_HOVER_COLOR or SHIELD_BUY_IDLE_COLOR
+		elseif self._shieldHovering then
+			self._shieldBtn.BackgroundColor3 = SHIELD_HOVER_COLOR
+		else
+			self._shieldBtn.BackgroundColor3 = Theme.Colors.Secondary
+		end
+	end
+
+	self._lastShieldRenderKey = string.format("%s|%s|armed=%s|pending=%s",
+		self._shieldBtn.Text,
+		countText,
+		tostring(self._shieldArmed),
+		tostring(self._shieldArmedPending)
+	)
+end
+
+function SeatUI:SetShieldState(state)
+	state = state or {}
+	self._shieldCount = math.max(0, tonumber(state.count) or 0)
+	self._shieldMax = math.max(0, tonumber(state.max) or self._shieldMax or 0)
+	self._shieldArmed = state.armed == true
+	self._shieldArmedPending = state.pending == true
+	self:_applyShieldButtonState()
+end
+
+function SeatUI:SetShieldCount(count)
+	self:SetShieldState({
+		count = count,
+		max = self._shieldMax,
+		armed = self._shieldArmed,
+		pending = self._shieldArmedPending
+	})
+end
+
+function SeatUI:SetShieldMax(max)
+	self:SetShieldState({
+		count = self._shieldCount,
+		max = max,
+		armed = self._shieldArmed,
+		pending = self._shieldArmedPending
+	})
+end
+
+function SeatUI:SetShieldArmed(armed)
+	self:SetShieldState({
+		count = self._shieldCount,
+		max = self._shieldMax,
+		armed = armed,
+		pending = self._shieldArmedPending
+	})
+end
+
+function SeatUI:SetShieldPending(pending)
+	self:SetShieldState({
+		count = self._shieldCount,
+		max = self._shieldMax,
+		armed = self._shieldArmed,
+		pending = pending
+	})
+end
+
+function SeatUI:_handleUseShield()
+	if self._shieldArmedPending or self._shieldArmed then return end
+	if self._shieldCount <= 0 then return end
+	self:SetShieldPending(true)
+
+	local remotes = ReplicatedStorage:FindFirstChild("Remotes")
+	if not remotes then
+		self:SetShieldPending(false)
+		warn("[SeatUI] Remotes folder not found")
+		return
+	end
+
+	local shieldRemote = remotes:FindFirstChild("UseShield")
+	if not shieldRemote then
+		self:SetShieldPending(false)
+		warn("[SeatUI] UseShield remote not found")
+		return
+	end
+
+	shieldRemote:FireServer()
+end
+
 function SeatUI:_handleInviteFriend()
-	print("[SeatUI] Invite Friend clicked")
-	
 	-- Try to use SocialService (only works in published games)
 	local success, err = pcall(function()
 		local player = Players.LocalPlayer
@@ -238,8 +392,6 @@ function SeatUI:_handleInviteFriend()
 end
 
 function SeatUI:_handleLeaveSeat()
-	print("[SeatUI] Leave Seat clicked")
-	
 	-- Fire remote to server
 	local ReplicatedStorage = game:GetService("ReplicatedStorage")
 	local remotes = ReplicatedStorage:FindFirstChild("Remotes")

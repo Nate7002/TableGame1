@@ -1,117 +1,184 @@
-# AGENTS.md — TableGame Engine Doctrine
+# AGENTS.md — TableGame1 AI Agent Instructions (Codex Optimized)
 
-## Role
+This file defines how AI coding agents (Codex, Cursor, etc.) must operate inside this repository.
 
-You are operating inside a reusable, multi-project Roblox game engine.
+The goal of this project is to build **TableGame1**, a modular Roblox PvP table game engine with clean system boundaries.
 
-This repository prioritizes long-term architecture integrity, modularity, and portability over short-term speed or convenience.
-
-You are a systems-oriented collaborator, not a script generator.
+Agents must preserve architecture and avoid cross‑system mutation.
 
 ---
 
-## Instruction Hierarchy
+# Project Overview
 
-Before performing any work:
+TableGame1 is a **server-authoritative Roblox engine** for table-based PvP minigames.
 
-1. Follow this `AGENTS.md`.
-2. Read and follow:
-   - `TABLEGAME1_SOURCE_OF_TRUTH_V5.md`
-   - `chatgpt_operating_rules_V6.md`
-3. Load additional rule modules **only if relevant** (see Conditional Rule Modules below).
+The engine is built as modular puzzle pieces.
 
-If guidance conflicts, prioritize architecture preservation and explicit project doctrine.
+Each system has a **single responsibility**.
+
+Agents must **extend systems**, not redesign them.
 
 ---
 
-## Conditional Rule Modules
+# Architecture Map
 
-Additional rule modules exist under:
+Server gameplay systems:
 
-`.cursor/rules/`
+```
+src/server/Core/
+```
 
-Only consult modules relevant to the current task domain.
+Primary systems:
 
-### Architecture / Core Engine Work
-If modifying systems, services, lifecycle logic, data flow, remotes, or game flow:
-- `.cursor/rules/architecture.mdc`
-- `.cursor/rules/edit-safety.mdc`
+StatsService
+Player stats, inventory, streaks
 
-### UI Work
-If modifying UI structure, layout, styling, components, or import pipeline:
-- `.cursor/rules/ui-doctrine.mdc`
-- `.cursor/rules/ui-implementation.mdc`
-- `.cursor/rules/ui-import.mdc`
+TableService
+Seat detection and table state
 
-Do NOT load unrelated rule modules.
+RoundService
+Match lifecycle and round outcomes
 
-Do NOT mix UI rules into backend work unless explicitly required.
+ModifierService
+Applies round modifiers (powerups)
 
----
-
-## Non-Negotiable Constraints
-
-- Think in puzzle-piece systems, not scripts.
-- Preserve architecture and portability.
-- Do not collapse systems together.
-- Do not introduce hidden state.
-- No circular dependencies.
-- No global state.
-- Server authoritative only.
-- Systems communicate ONLY via:
-  - `Shared/GameState`
-  - `Shared/Remotes`
-- GameFlowSystem is the sole orchestrator.
-- UI must never read server modules directly.
+Modifiers
+Isolated mechanics (shield, perks, etc)
 
 ---
 
-## Modification Discipline
+# System Responsibilities
 
-- One clearly scoped task per execution.
-- Never modify unrelated files.
-- No cross-system mutation unless explicitly requested.
-- Prefer minimal, additive, reversible changes.
-- Do not refactor outside the requested scope.
-- Do not rename or restructure modules without approval.
-- If a requested change implies architectural drift, stop and explain the impact before proceeding.
+StatsService
 
-If scope is ambiguous, ask before writing code.
+* Player stats
+* Inventory (shields, items)
+* Streak tracking
+* Round stat updates
+
+TableService
+
+* Seating logic
+* Seat UI requests
+* Player seat state
+
+RoundService
+
+* Round lifecycle
+* Determine winners / losers
+* Build resultPayload
+
+ModifierService
+
+* Mutate round results
+* Apply modifiers before stats
+
+Modifiers
+
+* Isolated mechanics
+* Must not store persistent state
 
 ---
 
-## Implementation Standards
+# Critical Architecture Rules
 
-When implementing changes:
+These rules must never be violated.
 
-- Specify exact file paths.
-- Keep diffs minimal.
-- Preserve naming consistency.
-- Avoid implicit side effects.
-- Avoid hidden coupling.
-- Avoid introducing stateful singletons.
-- Maintain portability across projects.
+1. StatsService is the **single authority** for inventory and stats.
+2. UI must never own gameplay state.
+3. Systems must not read or mutate another system's internal state.
+4. Never duplicate gameplay state across services.
+5. Modifier logic must live in **Modifiers**, not RoundService.
+6. Prefer seams and adapters over rewriting systems.
+
+Examples of violations:
+
+❌ Reading shields from player objects
+❌ Using leaderstats for gameplay logic
+❌ Storing duplicate inventory state outside StatsService
+❌ Writing gameplay rules inside UI
 
 ---
 
-## Output Requirements
+# Repository Layout
+
+```
+src/server/Core/       core gameplay systems
+src/server/Plugins/    minigame plugins
+src/server/Config/     configs
+
+src/client/UI/         UI controllers
+
+src/shared/            shared utilities
+
+ReplicatedStorage/UIAnimations/Modules/
+UI animation runtime
+```
+
+Agents must **not invent new top-level structure**.
+
+---
+
+# Development Workflow
+
+Use the following workflow:
+
+Build → Test → Commit → Push
+
+Do not skip testing steps.
+
+Agents should prefer **minimal diffs** and avoid rewriting working systems.
+
+---
+
+# Editing Rules
+
+When modifying code:
+
+* Use existing patterns from the repo
+* Preserve working behavior
+* Avoid speculative refactors
+* Confirm file paths before editing
+* Keep changes minimal and additive
+
+Never rewrite unrelated files.
+
+---
+
+# Refactor Safety
+
+When refactoring:
+
+* Preserve behavior
+* Move logic rather than rewriting
+* Introduce seams for future extension
+* Maintain determinism in gameplay systems
+
+---
+
+# Output Requirements
 
 All implementation responses must include:
 
-- Exact file paths modified.
-- Clear description of what changed.
-- Why the change is architecturally safe.
-- A short Roblox Studio test checklist when applicable.
+1. Exact file paths modified
+2. Clear description of what changed
+3. Why the change is architecturally safe
+4. Roblox Studio test checklist
 
 ---
 
-## Priority Order
+# Priority Order
+
+When making decisions:
 
 1. Architecture preservation
 2. Modular integrity
 3. Determinism
 4. Clarity
-5. Performance optimization
+5. Performance
 6. Cleverness
 
 Clever solutions must never compromise structure.
+
+---
+

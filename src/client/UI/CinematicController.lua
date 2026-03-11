@@ -87,8 +87,6 @@ function CinematicController.Init()
 	-- REMOVED: Direct remote listeners
 	-- UIController is now the only listener to avoid double-start
 	-- CinematicController is a pure module: Play() and Stop() are called directly
-	print("[CINE] Init() called - remotes handled by UIController")
-	
 	-- Warmup immediately on init
 	task.spawn(function()
 		CinematicController.Warmup()
@@ -107,7 +105,6 @@ function CinematicController.Warmup()
 	
 	pcall(function()
 		ContentProvider:PreloadAsync({anim})
-		print("[CINE] Warmup: Animation preloaded")
 	end)
 	
 	-- Dummy load to warm Animator (optional but good)
@@ -122,7 +119,6 @@ function CinematicController.Warmup()
 		track:Stop()
 	end)
 	tempModel:Destroy()
-	print("[CINE] Warmup complete")
 end
 
 function CinematicController.Play(animId, duration, tableModel)
@@ -130,9 +126,7 @@ function CinematicController.Play(animId, duration, tableModel)
 	currentToken = os.clock() .. "_" .. math.random(1000, 9999)
 	local playToken = currentToken
 	isCinematicActive = true
-	
-	print("[CINE] Play() called, token:", playToken)
-	
+
 	-- Cleanup any existing cinematic first (safe internal cleanup)
 	if currentRig or currentConnection or currentTrack then
 		warn("[CINE] Cleaning up existing cinematic before starting new one")
@@ -143,7 +137,6 @@ function CinematicController.Play(animId, duration, tableModel)
 	-- 1. Save Camera State
 	local cam = Workspace.CurrentCamera
 	if not savedCameraState then
-		print("[CINE] Saving camera state - Type:", cam.CameraType, "FOV:", cam.FieldOfView)
 		savedCameraState = {
 			CameraType = cam.CameraType,
 			CameraSubject = cam.CameraSubject,
@@ -202,9 +195,7 @@ function CinematicController.Play(animId, duration, tableModel)
 		_cleanupInternal()
 		return
 	end
-	
-	print("[CINE] Using camera BasePart:", cameraPart:GetFullName(), "Class:", cameraPart.ClassName)
-	
+
 	-- Ensure Camera can move (unanchored)
 	if cameraPart.Anchored then
 		cameraPart.Anchored = false
@@ -295,9 +286,7 @@ function CinematicController.Play(animId, duration, tableModel)
 	track.Looped = false
 	track:Play(0)
 	currentTrack = track
-	
-	print("[CINE] track started, len:", track.Length)
-	
+
 	-- Play Spinning Sound (looped)
 	local fxFolder = assets:FindFirstChild("FX")
 	if fxFolder then
@@ -335,7 +324,6 @@ function CinematicController.Play(animId, duration, tableModel)
 		if currentTime >= captureTime then
 			frozenCFrame = cameraPart.CFrame
 			currentTrack:AdjustSpeed(0)
-			print("[CINE] freeze captured CFrame at time:", currentTime, "len:", trackLength, "captureTime:", captureTime)
 			return true -- Captured
 		end
 		
@@ -377,7 +365,6 @@ end
 
 function CinematicController.StopSpinSound(reason)
 	if currentSound then
-		print("[CINE] Stopping spin sound, reason:", reason)
 		currentSound:Stop()
 		currentSound:Destroy()
 		currentSound = nil
@@ -388,12 +375,8 @@ function CinematicController.Stop(immediate)
 	-- immediate: if true, skip freeze frame and restore camera instantly
 	-- Make Stop() idempotent - if already stopped, return immediately
 	if not isCinematicActive and not currentRig and not currentConnection and not currentTrack then
-		print("[CINE] Stop() called but already stopped (idempotent)")
 		return
 	end
-	
-	local stopToken = currentToken
-	print("[CINE] Stop() called at", os.clock(), "immediate:", immediate or false, "token:", stopToken)
 	
 	-- Mark as inactive FIRST
 	isCinematicActive = false
@@ -404,7 +387,6 @@ function CinematicController.Stop(immediate)
 	if currentConnection then
 		currentConnection:Disconnect()
 		currentConnection = nil
-		print("[CINE] RenderStepped disconnected")
 	end
 	
 	-- Disconnect any freeze monitor connections
@@ -416,7 +398,6 @@ function CinematicController.Stop(immediate)
 	
 	-- Diagnostic: Check FOV before restore
 	local fovBefore = cam.FieldOfView
-	print("[CINE] FOV before restore:", fovBefore)
 	
 	if savedCameraState then
 		-- Restore camera type and subject instantly
@@ -424,17 +405,12 @@ function CinematicController.Stop(immediate)
 		local hum = localPlayer.Character and localPlayer.Character:FindFirstChildOfClass("Humanoid")
 		if hum then
 			cam.CameraSubject = hum
-			print("[CINE] Camera restored - Type: Custom, Subject: Humanoid")
-		else
-			print("[CINE] Camera restored - Type: Custom, Subject: nil (no character)")
 		end
 		
 		-- Diagnostic: Verify FOV unchanged
 		local fovAfter = cam.FieldOfView
 		if fovBefore ~= fovAfter then
 			warn("[CINE] WARNING: FOV changed from", fovBefore, "to", fovAfter)
-		else
-			print("[CINE] FOV unchanged:", fovAfter)
 		end
 		
 		savedCameraState = nil
@@ -471,8 +447,6 @@ function CinematicController.Stop(immediate)
 	
 	-- Clear saved camera state
 	savedCameraState = nil
-	
-	print("[CINE] Stop() complete at", os.clock(), "token:", stopToken)
 end
 
 return CinematicController

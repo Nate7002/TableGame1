@@ -9,16 +9,9 @@ local RunService = game:GetService("RunService")
 
 local DataService = require(script.Parent:WaitForChild("DataService"))
 local StatsService = require(script.Parent:WaitForChild("StatsService"))
+local DebugService = require(script.Parent:WaitForChild("DebugService"))
 
 local LeaderboardService = {}
-
-local DEBUG_LB = true
-
-local function dprint(...)
-	if DEBUG_LB then
-		print(...)
-	end
-end
 
 -- Constants
 local TOP_N = 10
@@ -126,9 +119,7 @@ local function getOverallStore(category)
 		if ok and store then
 			overallStores[category] = store
 		else
-			if DEBUG_LB then
-				warn(string.format("[LeaderboardService][Store] FAIL ns=%s storeName=%s", tostring(NAMESPACE), storeName))
-			end
+			DebugService.Warn("LEADERBOARD", "STORE_FAIL", { ns = tostring(NAMESPACE), storeName = storeName })
 		end
 	end
 	return overallStores[category]
@@ -149,9 +140,7 @@ local function getWeeklyStore(category, weekKey)
 		if ok and store then
 			weeklyStores[NAMESPACE][weekKey][category] = store
 		else
-			if DEBUG_LB then
-				warn(string.format("[LeaderboardService][Store] FAIL ns=%s storeName=%s", tostring(NAMESPACE), storeName))
-			end
+			DebugService.Warn("LEADERBOARD", "STORE_FAIL", { ns = tostring(NAMESPACE), storeName = storeName })
 		end
 	end
 	return weeklyStores[NAMESPACE][weekKey][category]
@@ -190,12 +179,9 @@ local function writeKey(userId, category, scope, value)
 	end)
 	if not ok then
 		dirtySet[key] = true
-		if DEBUG_LB then
-			warn(string.format("[LeaderboardService][Write] FAIL ns=%s %s %s userId=%d value=%s", tostring(NAMESPACE), scope, category, userId, tostring(value)))
-		end
+		DebugService.Warn("LEADERBOARD", "WRITE_FAIL", { ns = tostring(NAMESPACE), scope = scope, category = category, userId = userId, value = tostring(value) })
 		return false
 	end
-	dprint(string.format("[LeaderboardService][Write] OK   ns=%s %s %s userId=%d value=%s", tostring(NAMESPACE), scope, category, userId, tostring(value)))
 	return true
 end
 
@@ -238,7 +224,6 @@ local function updatePlayerInStores(userId, stats, force)
 			end
 		else
 			dirtySet[keyO] = true
-			dprint(string.format("[LeaderboardService][Write] DEBOUNCE %s %s userId=%d (dirty)", SCOPE_OVERALL, cat, userId))
 		end
 
 		if force or not shouldDebounce(userId, cat, SCOPE_WEEKLY) then
@@ -251,7 +236,6 @@ local function updatePlayerInStores(userId, stats, force)
 			end
 		else
 			dirtySet[keyW] = true
-			dprint(string.format("[LeaderboardService][Write] DEBOUNCE %s %s userId=%d (dirty)", SCOPE_WEEKLY, cat, userId))
 		end
 	end
 end
@@ -273,13 +257,6 @@ local function flushDirtyPeriodic()
 		if userId and not userIdsToFlush[userId] then
 			userIdsToFlush[userId] = true
 		end
-	end
-	local count = 0
-	for _ in pairs(userIdsToFlush) do
-		count = count + 1
-	end
-	if count > 0 then
-		dprint(string.format("[LeaderboardService][Flush] periodic userIds=%d", count))
 	end
 	for userId in pairs(userIdsToFlush) do
 		local stats = lastKnownStats[userId]
@@ -327,7 +304,6 @@ function LeaderboardService.GetTop(category, scope)
 	local ckey = getCachedKey(category, scope)
 	local cached = readCache[ckey]
 	if cached and tick() <= cached.expiresAt then
-		dprint(string.format("[LeaderboardService][GetTop] cache-hit %s %s (n=%d)", scope, category, #cached.entries))
 		return cached.entries
 	end
 
@@ -338,18 +314,11 @@ function LeaderboardService.GetTop(category, scope)
 		store = getWeeklyStore(category, LeaderboardService.getWeekKeyUTC())
 	end
 
-	dprint(string.format("[LeaderboardService][GetTop] datastore-read %s %s ns=%s", scope, category, tostring(NAMESPACE)))
 	local entries = readTopFromStore(store, category, scope)
 	if not apiEnabled then
 		entries = {}
 	end
 	readCache[ckey] = { entries = entries, expiresAt = tick() + READ_CACHE_TTL }
-	if #entries > 0 then
-		local top1 = entries[1]
-		dprint(string.format("[LeaderboardService][GetTop] %s %s top1=%s(%d) value=%s n=%d", scope, category, tostring(top1.username), tonumber(top1.userId) or -1, tostring(top1.value), #entries))
-	else
-		dprint(string.format("[LeaderboardService][GetTop] %s %s n=0", scope, category))
-	end
 	return entries
 end
 
@@ -594,9 +563,6 @@ local function rotateAllBoards()
 		fadeHeaderLabels(1, HEADER_FADE_DURATION)
 
 		weeklyOnFront = not weeklyOnFront
-		if DEBUG_LB then
-			print(string.format("[LeaderboardService][Rotate] weeklyOnFront=%s", tostring(weeklyOnFront)))
-		end
 		applyAllHeaderTexts()
 
 		local startTime = tick()
@@ -699,11 +665,11 @@ end
 -- ---------------------------------------------------------------------------
 function LeaderboardService.Init()
 	NAMESPACE = resolveNamespace()
-	print(string.format("[LeaderboardService] Namespace=%s", NAMESPACE))
+	DebugService.Info("LEADERBOARD", "NAMESPACE", { ns = NAMESPACE })
 
 	apiEnabled = DataService.IsApiEnabled()
 	if not apiEnabled then
-		warn("[LeaderboardService] DataStore API disabled; leaderboards will show empty.")
+		DebugService.Warn("LEADERBOARD", "API_DISABLED", {})
 	end
 
 	ensureCountdownParts()
@@ -724,16 +690,6 @@ function LeaderboardService.Init()
 		if not player or not player.Parent then return end
 		local stats = StatsService.GetStats(player)
 		if stats then
-			if DEBUG_LB then
-				local parts = {}
-				for _, cat in ipairs(CATEGORIES) do
-					local keys = STAT_KEYS[cat]
-					local overallVal = (keys and stats[keys.overall]) or 0
-					local weeklyVal = (keys and stats[keys.weekly]) or 0
-					table.insert(parts, string.format("%s O=%s W=%s", cat, tostring(overallVal), tostring(weeklyVal)))
-				end
-				print(string.format("[LeaderboardService][StatsChanged] %s(%d) %s", player.Name, player.UserId, table.concat(parts, " | ")))
-			end
 			updatePlayerInStores(player.UserId, stats, false)
 			LeaderboardService.InvalidateReadCache()
 			bindAllBoards()
@@ -785,7 +741,7 @@ function LeaderboardService.Init()
 		end
 	end)
 
-	print("[LeaderboardService] Init complete.")
+	DebugService.Info("LEADERBOARD", "INIT_COMPLETE", {})
 end
 
 return LeaderboardService

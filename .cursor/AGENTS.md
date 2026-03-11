@@ -9,7 +9,7 @@ If conflicts arise, follow this hierarchy:
 
 1. TABLEGAME1_SOURCE_OF_TRUTH_V5.md
 2. universal_ui_operating_standard.md (UI matters)
-3. ChatGPT Operating Rules (V7)
+3. chatgpt_operating_rules_V7.md
 4. Cursor project rules in `.cursor/rules/`
 5. This file
 
@@ -127,4 +127,3 @@ Do not introduce new UI hierarchies, lifecycles, or structural patterns unless e
 AGENTS.md provides repository-level execution guidance only.
 
 Do not duplicate canonical specifications across layers.
-

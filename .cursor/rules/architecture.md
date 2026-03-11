@@ -26,3 +26,20 @@ Systems must remain:
 
 Reject designs introducing hidden coupling.
 
+## Server Architecture
+
+Gameplay systems must maintain clear ownership.
+
+StatsService
+- Owns player stats and inventory.
+
+TableService
+- Owns seat detection and table state.
+
+RoundService
+- Owns round lifecycle and outcomes.
+
+ModifierService
+- Mutates round results through modifiers.
+
+Systems must not duplicate gameplay state.

@@ -5,6 +5,7 @@ local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local SoundService = game:GetService("SoundService")
 local TweenService = game:GetService("TweenService")
+local Shared = ReplicatedStorage:WaitForChild("Shared")
 
 -- Safe Require Helper
 local function safeRequire(path, name)
@@ -13,7 +14,6 @@ local function safeRequire(path, name)
 		warn("[CLIENT] REQUIRE FAILED:", name, mod)
 		return nil
 	end
-	print("[CLIENT] REQUIRE OK:", name)
 	return mod
 end
 
@@ -27,11 +27,10 @@ local FxService = safeRequire(UI.FxService, "FxService")
 local CinematicController = safeRequire(UI.CinematicController, "CinematicController")
 local PromptController = safeRequire(UI.PromptController, "PromptController")
 local WorldSpinUIController = safeRequire(UI.WorldSpinUIController, "WorldSpinUIController")
+local ShieldConfig = safeRequire(Shared:WaitForChild("ShieldConfig", 2), "ShieldConfig")
+local DEFAULT_SHIELD_MAX = (ShieldConfig and ShieldConfig.MaxShields) or 3
 
--- Remotes (with safe waits)
-print("[CLIENT] Waiting for Remotes...")
 local Remotes = ReplicatedStorage:WaitForChild("Remotes")
-print("[CLIENT] Remotes found")
 
 local PromptChoiceEvent = Remotes:WaitForChild("PromptChoice")
 local PromptResponseEvent = Remotes:WaitForChild("PromptResponse")
@@ -45,6 +44,8 @@ local OpponentLeft = Remotes:WaitForChild("OpponentLeft", 5)
 local OpponentLeftToast = Remotes:WaitForChild("OpponentLeftToast", 5)
 local OpponentLeftCard = Remotes:WaitForChild("OpponentLeftCard", 5)
 local PlaySpinCinematic = Remotes:WaitForChild("PlaySpinCinematic", 5)
+local ShieldArmedEvent = Remotes:WaitForChild("ShieldArmed", 5)
+local UseShieldFailedEvent = Remotes:WaitForChild("UseShieldFailed", 5)
 -- Task: Renamed to CinematicStartedAck
 local CinematicStartedAck = Remotes:WaitForChild("CinematicStartedAck", 5)
 local CinematicStoppedAck = Remotes:WaitForChild("CinematicStoppedAck", 5)
@@ -61,7 +62,59 @@ local toastComponent = nil
 
 -- UX FIX B: Setup Seated UI (Invite/Leave buttons)
 local SeatUI = safeRequire(UI:WaitForChild("Components"):WaitForChild("SeatUI", 2), "SeatUI")
+local ShieldInventoryUI = safeRequire(UI:WaitForChild("Components"):WaitForChild("ShieldInventoryUI", 2), "ShieldInventoryUI")
 local seatUIComponent = nil -- Initialized in getScreenGui or later
+local shieldInventoryUI = nil
+local shieldUIState = {
+	count = 0,
+	armed = false,
+	pending = false,
+	max = DEFAULT_SHIELD_MAX
+}
+local applyShieldUIState
+
+local function setShieldCount(count)
+	shieldUIState.count = math.max(0, tonumber(count) or 0)
+	if shieldUIState.count <= 0 then
+		shieldUIState.armed = false
+		shieldUIState.pending = false
+	end
+	if applyShieldUIState then
+		applyShieldUIState()
+	end
+end
+
+local function setShieldMax(max)
+	shieldUIState.max = math.max(0, tonumber(max) or 0)
+	if applyShieldUIState then
+		applyShieldUIState()
+	end
+end
+
+local function setShieldArmed(armed)
+	shieldUIState.armed = armed == true
+	if shieldUIState.armed then
+		shieldUIState.pending = false
+	end
+	if applyShieldUIState then
+		applyShieldUIState()
+	end
+end
+
+local function setShieldPending(pending)
+	shieldUIState.pending = pending == true and not shieldUIState.armed
+	if applyShieldUIState then
+		applyShieldUIState()
+	end
+end
+
+local function clearShieldPresentation()
+	shieldUIState.armed = false
+	shieldUIState.pending = false
+	if applyShieldUIState then
+		applyShieldUIState()
+	end
+end
 
 -- Init GUI
 local function getScreenGui()
@@ -84,9 +137,7 @@ local function getScreenGui()
 		local ok, result = pcall(function()
 			popupComponent = ChoicePopup.new(gui)
 		end)
-		if ok then
-			print("[CLIENT] ChoicePopup.new OK")
-		else
+		if not ok then
 			warn("[CLIENT] ChoicePopup.new FAILED:", result)
 		end
 	end
@@ -94,9 +145,7 @@ local function getScreenGui()
 		local ok, result = pcall(function()
 			toastComponent = Toast.new(gui)
 		end)
-		if ok then
-			print("[CLIENT] Toast.new OK")
-		else
+		if not ok then
 			warn("[CLIENT] Toast.new FAILED:", result)
 		end
 	end
@@ -105,14 +154,52 @@ local function getScreenGui()
 		local ok, result = pcall(function()
 			seatUIComponent = SeatUI.new(gui)
 		end)
-		if ok then
-			print("[CLIENT] SeatUI.new OK")
-		else
+		if not ok then
 			warn("[CLIENT] SeatUI.new FAILED:", result)
 		end
 	end
+	if not shieldInventoryUI and ShieldInventoryUI then
+		local ok, result = pcall(function()
+			shieldInventoryUI = ShieldInventoryUI.new(gui)
+		end)
+		if not ok then
+			warn("[CLIENT] ShieldInventoryUI.new FAILED:", result)
+		end
+	end
+
+	if applyShieldUIState then
+		applyShieldUIState()
+	end
 	
 	return gui
+end
+
+applyShieldUIState = function()
+	if shieldInventoryUI then
+		if shieldInventoryUI.SetDisplay then
+			shieldInventoryUI:SetDisplay(shieldUIState.count, shieldUIState.max)
+		else
+			shieldInventoryUI:SetCount(shieldUIState.count)
+			if shieldInventoryUI.SetMax then
+				shieldInventoryUI:SetMax(shieldUIState.max)
+			end
+		end
+	end
+
+	if seatUIComponent then
+		if seatUIComponent.SetShieldState then
+			seatUIComponent:SetShieldState(shieldUIState)
+		else
+			seatUIComponent:SetShieldCount(shieldUIState.count)
+			if seatUIComponent.SetShieldMax then
+				seatUIComponent:SetShieldMax(shieldUIState.max)
+			end
+			seatUIComponent:SetShieldArmed(shieldUIState.armed)
+			if seatUIComponent.SetShieldPending then
+				seatUIComponent:SetShieldPending(shieldUIState.pending)
+			end
+		end
+	end
 end
 
 -- Helper: Normalize Table Key
@@ -131,7 +218,6 @@ end
 local function onPromptChoice(payload)
 	-- Clear countdown state when UI opens (match in progress)
 	countdownActive = false
-	print("[CLIENT] PromptChoice RECEIVED id=" .. tostring(payload.promptId))
 	
 	-- Stop spin sound immediately when card pops up
 	if CinematicController and CinematicController.StopSpinSound then
@@ -157,7 +243,6 @@ local function onPromptChoice(payload)
 end
 
 local function onNotify(text, duration)
-	print("[CLIENT] Notify RECEIVED:", text)
 	getScreenGui() -- Ensure created
 	
 	-- Show via singleton
@@ -171,7 +256,6 @@ end
 -- Listeners (with logging)
 if MatchStartEvent then
 	MatchStartEvent.OnClientEvent:Connect(function()
-		print("[CLIENT] MatchStart RECEIVED")
 		if PromptController then
 			PromptController.DisablePrompts()
 		end
@@ -189,10 +273,10 @@ end
 
 if MatchEndEvent then
 	MatchEndEvent.OnClientEvent:Connect(function()
-		print("[CLIENT] MatchEnd RECEIVED")
 		if PromptController then
 			PromptController.EnablePrompts()
 		end
+		clearShieldPresentation()
 		-- UX FIX: Show SeatUI after match (if seated)
 		if seatUIComponent then
 			seatUIComponent:SetMatchActive(false)
@@ -207,26 +291,22 @@ end
 
 if PromptChoiceEvent then
 	PromptChoiceEvent.OnClientEvent:Connect(onPromptChoice)
-	print("[CLIENT] Hooked PromptChoice")
 else
 	warn("[CLIENT] PromptChoiceEvent not found")
 end
 
 if NotifyEvent then
 	NotifyEvent.OnClientEvent:Connect(onNotify)
-	print("[CLIENT] Hooked Notify")
 else
 	warn("[CLIENT] NotifyEvent not found")
 end
 
 if UIFxEvent then
 	UIFxEvent.OnClientEvent:Connect(function(soundName)
-		print("[CLIENT] UIFxEvent RECEIVED:", soundName)
 		if FxService and FxService.Play then
 			FxService.Play(soundName)
 		end
 	end)
-	print("[CLIENT] Hooked UIFxEvent")
 else
 	warn("[CLIENT] UIFxEvent not found")
 end
@@ -236,7 +316,6 @@ if PlaySpinCinematic and CinematicController then
 	PlaySpinCinematic.OnClientEvent:Connect(function(animId, duration, tableModel, cineToken)
 		-- Clear countdown state when match actually starts
 		countdownActive = false
-		print(string.format("[CLIENT] PlaySpinCinematic RECEIVED at %0.6f token=%s", os.clock(), tostring(cineToken)))
 		if CinematicController and CinematicController.Play then
 			local ok, err = pcall(function()
 				CinematicController.Play(animId, duration, tableModel)
@@ -250,7 +329,6 @@ if PlaySpinCinematic and CinematicController then
 		if CinematicStartedAck then
 			local tableKey = NormalizeTableKey(tableModel)
 			CinematicStartedAck:FireServer(tableKey, cineToken)
-			print(string.format("[CLIENT] Fired CinematicStartedAck at %0.6f token=%s", os.clock(), tostring(cineToken)))
 		end
 		
 		-- Hide other world UIs
@@ -265,7 +343,6 @@ if PlaySpinCinematic and CinematicController then
 			seatUIComponent:SetMatchActive(true)
 		end
 	end)
-	print("[CLIENT] Hooked PlaySpinCinematic (single listener)")
 else
 	if not PlaySpinCinematic then
 		warn("[CLIENT] PlaySpinCinematic not found")
@@ -277,7 +354,6 @@ end
 
 if StopSpinCinematic and CinematicController then
 	StopSpinCinematic.OnClientEvent:Connect(function(immediate)
-		print("[CLIENT] StopSpinCinematic RECEIVED at", os.clock(), "immediate:", immediate or false)
 		if CinematicController and CinematicController.Stop then
 			local ok, err = pcall(function()
 				CinematicController.Stop(immediate)
@@ -290,7 +366,6 @@ if StopSpinCinematic and CinematicController then
 		-- Problem 2: Send CinematicStoppedAck
 		if CinematicStoppedAck then
 			CinematicStoppedAck:FireServer()
-			print("[CLIENT] Fired CinematicStoppedAck")
 		end
 		
 		-- Ensure prompts are enabled if match ends abruptly via StopSpinCinematic (fallback)
@@ -302,7 +377,6 @@ if StopSpinCinematic and CinematicController then
 			WorldSpinUIController.SetInMatch(false, nil)
 		end
 	end)
-	print("[CLIENT] Hooked StopSpinCinematic (single listener)")
 else
 	if not StopSpinCinematic then
 		warn("[CLIENT] StopSpinCinematic not found")
@@ -314,7 +388,6 @@ end
 
 if CloseStageUI then
 	CloseStageUI.OnClientEvent:Connect(function()
-		print("[CLIENT] CloseStageUI RECEIVED at", os.clock())
 		if popupComponent and popupComponent.Hide then
 			popupComponent:Hide()
 		end
@@ -323,14 +396,12 @@ if CloseStageUI then
 			seatUIComponent:SetChoiceActive(false)
 		end
 	end)
-	print("[CLIENT] Hooked CloseStageUI")
 else
 	warn("[CLIENT] CloseStageUI not found")
 end
 
 if OpponentLeftToast then
 	OpponentLeftToast.OnClientEvent:Connect(function(message, seconds)
-		print("[CLIENT] OpponentLeftToast RECEIVED:", message)
 		getScreenGui() -- Ensure GUI exists even if no Stage UI ever opened
 		
 		-- Show toast notification
@@ -347,19 +418,18 @@ if OpponentLeftToast then
 		if WorldSpinUIController then WorldSpinUIController.SetInMatch(false, nil) end
 		
 		-- UX FIX: Reset SeatUI flags
+		clearShieldPresentation()
 		if seatUIComponent then
 			seatUIComponent:SetMatchActive(false)
 			seatUIComponent:SetChoiceActive(false)
 		end
 	end)
-	print("[CLIENT] Hooked OpponentLeftToast")
 else
 	warn("[CLIENT] OpponentLeftToast not found")
 end
 
 if OpponentLeftCard then
 	OpponentLeftCard.OnClientEvent:Connect(function(message, seconds)
-		print("[CLIENT] OpponentLeftCard RECEIVED:", message)
 		if popupComponent then
 			-- Show \"Opponent left\" message on card
 			if popupComponent._statusLabel then
@@ -394,6 +464,7 @@ if OpponentLeftCard then
 					if WorldSpinUIController then WorldSpinUIController.SetInMatch(false, nil) end
 					
 					-- UX FIX: Reset SeatUI flags
+					clearShieldPresentation()
 					if seatUIComponent then
 						seatUIComponent:SetMatchActive(false)
 						seatUIComponent:SetChoiceActive(false)
@@ -404,7 +475,6 @@ if OpponentLeftCard then
 			warn("[CLIENT] popupComponent not available for OpponentLeftCard")
 		end
 	end)
-	print("[CLIENT] Hooked OpponentLeftCard")
 else
 	warn("[CLIENT] OpponentLeftCard not found")
 end
@@ -414,13 +484,12 @@ local StatsUpdate = Remotes:WaitForChild("StatsUpdate", 5)
 if StatsUpdate then
 	StatsUpdate.OnClientEvent:Connect(function(stats, cashDelta)
 		cashDelta = cashDelta or 0
-		print("[CLIENT] StatsUpdate RECEIVED:", stats.Cash, "total cash", cashDelta, "delta", stats.Wins, "wins", stats.Streak, "streak")
 		
 		-- Ensure toast is available
 		if not toastComponent then
 			getScreenGui() -- Initialize if needed
 		end
-		
+		setShieldCount(stats.Shields or 0)
 		if toastComponent then
 			-- Show reward toast if cash was earned this round
 			if cashDelta > 0 then
@@ -437,9 +506,32 @@ if StatsUpdate then
 			warn("[CLIENT] toastComponent not available for StatsUpdate")
 		end
 	end)
-	print("[CLIENT] Hooked StatsUpdate")
 else
 	warn("[CLIENT] StatsUpdate not found")
+end
+
+-- Shield inventory sync (authoritative server updates)
+local ShieldChanged = Remotes:FindFirstChild("ShieldChanged")
+if ShieldChanged then
+	ShieldChanged.OnClientEvent:Connect(function(newCount)
+		setShieldCount(newCount)
+	end)
+end
+
+if ShieldArmedEvent then
+	ShieldArmedEvent.OnClientEvent:Connect(function()
+		setShieldArmed(true)
+	end)
+else
+	warn("[CLIENT] ShieldArmedEvent not found")
+end
+
+if UseShieldFailedEvent then
+	UseShieldFailedEvent.OnClientEvent:Connect(function(_reason)
+		clearShieldPresentation()
+	end)
+else
+	warn("[CLIENT] UseShieldFailedEvent not found")
 end
 
 -- Match Countdown Display (using Toast system)
@@ -451,8 +543,6 @@ if MatchCountdown then
 	MatchCountdown.OnClientEvent:Connect(function(tableId, secondsRemaining, opponentName)
 		-- Guard: ensure opponentName is a string
 		opponentName = tostring(opponentName or "Opponent")
-		
-		print("[CLIENT] MatchCountdown RECEIVED:", tableId, secondsRemaining, opponentName)
 		
 		-- Ensure toast is available
 		if not toastComponent then
@@ -477,7 +567,6 @@ if MatchCountdown then
 			seatUIComponent:SetMatchActive(false) -- Explicitly false during countdown
 		end
 	end)
-	print("[CLIENT] Hooked MatchCountdown")
 else
 	warn("[CLIENT] MatchCountdown not found")
 end
@@ -486,8 +575,6 @@ if MatchCountdownCancel then
 	MatchCountdownCancel.OnClientEvent:Connect(function(reason)
 		-- Guard: ensure reason is a string
 		reason = tostring(reason or "Unknown reason")
-		
-		print("[CLIENT] MatchCountdownCancel RECEIVED:", reason)
 		
 		countdownActive = false
 		
@@ -506,7 +593,6 @@ if MatchCountdownCancel then
 			seatUIComponent:SetMatchActive(false)
 		end
 	end)
-	print("[CLIENT] Hooked MatchCountdownCancel")
 else
 	warn("[CLIENT] MatchCountdownCancel not found")
 end
@@ -514,7 +600,6 @@ end
 -- Step B: MatchStartingNow Handler
 if MatchStartingNow then
 	MatchStartingNow.OnClientEvent:Connect(function()
-		print(string.format("[CLIENT] MatchStartingNow RECEIVED at %0.6f", os.clock()))
 		countdownActive = false
 		
 		-- Immediately hide countdown toast fast
@@ -527,7 +612,6 @@ if MatchStartingNow then
 			seatUIComponent:EaseOutFast()
 		end
 	end)
-	print("[CLIENT] Hooked MatchStartingNow")
 end
 
 -- Safe Init Calls
@@ -535,9 +619,7 @@ if CinematicController and CinematicController.Init then
 	local ok2, err = pcall(function() 
 		CinematicController.Init() 
 	end)
-	if ok2 then
-		print("[CLIENT] CinematicController.Init OK")
-	else
+	if not ok2 then
 		warn("[CLIENT] CinematicController.Init FAILED:", err)
 	end
 else
@@ -550,32 +632,36 @@ end
 
 if WorldSpinUIController and WorldSpinUIController.Init then
 	WorldSpinUIController.Init()
-	print("[CLIENT] WorldSpinUIController.Init OK")
 end
 
--- UX FIX A: Initialize PromptController seated listener
+-- Initialize seated UI listener (connect before Init to receive initial SeatedChanged fire)
+getScreenGui() -- Ensure components are created
+if PromptController and PromptController.SeatedChanged then
+	PromptController.SeatedChanged:Connect(function(isSeated)
+		if not isSeated then
+			clearShieldPresentation()
+		end
+		if seatUIComponent then
+			seatUIComponent:SetSeated(isSeated)
+		end
+		if shieldInventoryUI then
+			shieldInventoryUI:SetVisible(not isSeated)
+		end
+		if isSeated and applyShieldUIState then
+			applyShieldUIState()
+		end
+	end)
+else
+	warn("[CLIENT] PromptController missing SeatedChanged signal")
+end
+
+if not seatUIComponent then
+	warn("[CLIENT] SeatUI component not initialized")
+end
+
+-- UX FIX A: Initialize PromptController (after Connect so we receive initial SeatedChanged fire)
 if PromptController and PromptController.Init then
 	PromptController.Init()
-	print("[CLIENT] PromptController.Init OK")
-end
-
--- Initialize seated UI listener
-getScreenGui() -- Ensure components are created
-if seatUIComponent then
-	-- Connect PromptController signal to SeatUI
-	if PromptController and PromptController.SeatedChanged then
-		PromptController.SeatedChanged:Connect(function(isSeated)
-			print("[CLIENT] PromptController.SeatedChanged:", isSeated)
-			seatUIComponent:SetSeated(isSeated)
-		end)
-		print("[CLIENT] Wired PromptController.SeatedChanged -> SeatUI")
-	else
-		warn("[CLIENT] PromptController missing SeatedChanged signal")
-	end
-	
-	print("[CLIENT] SeatUI initialized OK")
-else
-	warn("[CLIENT] SeatUI component not initialized")
 end
 
 -- Lobby Music
@@ -595,7 +681,6 @@ task.spawn(function()
 			music.Looped = true
 			music.Parent = SoundService
 			music:Play()
-			print("[CLIENT] Lobby music started")
 		end
 	end
 end)

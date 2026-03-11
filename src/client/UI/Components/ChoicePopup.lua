@@ -45,10 +45,6 @@ local success, result = pcall(function()
 			Anim_Hover = safeRequire(Modules:WaitForChild("Frame_ScaleDown", 2), "Frame_ScaleDown")
 			Anim_Press = safeRequire(Modules:WaitForChild("ImageButton_PressDown", 2), "ImageButton_PressDown")
 			Anim_Ripple = safeRequire(Modules:WaitForChild("ImageButton_RippleClick", 2), "ImageButton_RippleClick")
-			
-			if AnimationRuntime then
-				print("[UIAnim] AnimationRuntime loaded OK")
-			end
 		end
 	end
 end)
@@ -278,8 +274,6 @@ function ChoicePopup.new(parentGui)
 end
 
 function ChoicePopup:Show(payload, onResponse)
-	print("[UI] Show called at", os.clock())
-	
 	-- Reset state but DON'T call Hide() (which destroys overlay)
 	-- Only reset closing/waiting flags
 	self._isClosing = false
@@ -434,7 +428,6 @@ function ChoicePopup:CreateButton(option, count, onResponse)
 		if self._isClosing or self._isWaiting then return end
 		
 		playFxSound("ButtonClick") -- Play click sound
-		print("[UI] Player clicked option:", option.id, "at", os.clock())
 		
 		-- Send choice to server
 		if onResponse then onResponse(option.id) end
@@ -513,7 +506,6 @@ function ChoicePopup:CreateButton(option, count, onResponse)
 		
 		if boundCount > 0 then
 			animsRegistered = true
-			print("[UIAnim] bound", boundCount, "animations (hover/press/ripple) to", btn.Name)
 		else
 			warn("[UIAnim] No animations bound to", btn.Name)
 		end
@@ -609,8 +601,6 @@ function ChoicePopup:ShowWaitingState(selectedOption)
 	-- UX FIX C: Cancel reminder when player picks
 	self:_cancelReminder()
 	
-	print("[UI] ShowWaitingState called at", os.clock())
-	
 	-- Disable all buttons
 	for _, child in ipairs(self._optionsContainer:GetChildren()) do
 		if child:IsA("Frame") then
@@ -651,7 +641,6 @@ function ChoicePopup:_scheduleReminder(opponentName)
 		end
 	end)
 	
-	print("[UI] Reminder scheduled (opponent picked first)")
 end
 
 -- UX FIX C: Cancel reminder
@@ -703,9 +692,6 @@ function ChoicePopup:_playReminderSound()
 
 	self._reminderSound = s
 
-	-- debug
-	print(string.format("[UI] Playing ReminderSound (time=%.2fs vol=%.2f)", s.TimeLength, s.Volume))
-
 	s:Play()
 
 	-- cleanup after it finishes (TimeLength can be 0 before load; give it a buffer)
@@ -721,7 +707,6 @@ function ChoicePopup:_showReminder()
 	self._statusLabel.TextColor3 = Color3.fromRGB(255, 85, 85) -- Red urgency
 	self._statusLabel.Visible = true
 	
-	print("[UI] Reminder shown")
 	self:_playReminderSound()
 	
 	-- Pulse/shake animation
@@ -759,7 +744,6 @@ end
 
 function ChoicePopup:Hide()
 	if self._isClosing then return end
-	print("[UI] Hide() called at", os.clock())
 	self._isClosing = true
 	self._isWaiting = false
 	self._currentTimerId += 1 -- Invalidates timers
@@ -794,7 +778,6 @@ function ChoicePopup:Hide()
 	
 	-- Close immediately (no animation delay on round resolve)
 	self._overlay.Visible = false
-	print("[UI] overlay.Visible set to false at", os.clock())
 end
 
 function ChoicePopup:Destroy()

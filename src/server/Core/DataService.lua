@@ -22,7 +22,7 @@ local lastSaveTime = {} -- [UserId] = os.clock()
 local apiEnabled = true
 local autosaveConnection = nil
 
--- Helper: Default data structure
+-- Helper: Default data structure (must match StatsService schema)
 local function getDefaultData()
 	return {
 		v = SCHEMA_VERSION,
@@ -32,7 +32,14 @@ local function getDefaultData()
 			Streak = 0,
 			MaxStreak = 0,
 			GamesPlayed = 0,
-			TotalDonated = 0
+			TotalDonated = 0,
+			WeeklyGamesPlayed = 0,
+			WeeklyMaxStreak = 0,
+			WeeklyDonations = 0,
+			WeeklyStamp = "",
+			Gems = 0,
+			Shields = 0,
+			FreeShieldGranted = false,
 		},
 		updatedAt = os.time()
 	}
@@ -44,7 +51,7 @@ local function sanitizeData(data)
 		return getDefaultData()
 	end
 	
-	-- Ensure schema
+	-- Ensure schema (all fields StatsService expects)
 	data.v = data.v or SCHEMA_VERSION
 	data.stats = data.stats or {}
 	data.stats.Cash = data.stats.Cash or 0
@@ -53,8 +60,15 @@ local function sanitizeData(data)
 	data.stats.MaxStreak = data.stats.MaxStreak or 0
 	data.stats.GamesPlayed = data.stats.GamesPlayed or 0
 	data.stats.TotalDonated = data.stats.TotalDonated or 0
+	data.stats.WeeklyGamesPlayed = data.stats.WeeklyGamesPlayed or 0
+	data.stats.WeeklyMaxStreak = data.stats.WeeklyMaxStreak or 0
+	data.stats.WeeklyDonations = data.stats.WeeklyDonations or 0
+	data.stats.WeeklyStamp = data.stats.WeeklyStamp or ""
+	data.stats.Gems = data.stats.Gems or 0
+	data.stats.Shields = data.stats.Shields or 0
+	data.stats.FreeShieldGranted = data.stats.FreeShieldGranted or false
 	data.updatedAt = data.updatedAt or os.time()
-	
+
 	return data
 end
 
@@ -136,14 +150,11 @@ function DataService.LoadPlayer(player)
 		if data then
 			data = sanitizeData(data)
 			cache[userId] = data
-			print(string.format("[DataService] Loaded %s: Cash=%d, Wins=%d, Streak=%d, MaxStreak=%d", 
-				player.Name, data.stats.Cash, data.stats.Wins, data.stats.Streak, data.stats.MaxStreak))
 			return data
 		else
 			-- New player
 			local defaultData = getDefaultData()
 			cache[userId] = defaultData
-			print(string.format("[DataService] New player %s - using defaults", player.Name))
 			return defaultData
 		end
 	else
@@ -197,8 +208,6 @@ function DataService.SavePlayer(player, data, reason)
 	end)
 	
 	if success then
-		print(string.format("[DataService] Saved %s (%s): Cash=%d, Wins=%d, Streak=%d", 
-			player.Name, reason or "manual", data.stats.Cash, data.stats.Wins, data.stats.Streak))
 		return true
 	else
 		warn(string.format("[DataService] Save failed for %s (%s)", player.Name, reason or "manual"))
@@ -219,7 +228,6 @@ end
 function DataService.AutosaveAll()
 	if not apiEnabled then return end
 	
-	print("[DataService] Autosave triggered")
 	local savedCount = 0
 	local failedCount = 0
 	
@@ -286,4 +294,3 @@ function DataService.GetNamespace()
 end
 
 return DataService
-

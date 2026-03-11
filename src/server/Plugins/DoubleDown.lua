@@ -86,13 +86,16 @@ local function getChoices(players, stage, currentReward, rarity, sfxOverride, ta
 	for _, player in ipairs(players) do
 		threads += 1
 		task.spawn(function()
-			-- Problem 1: Generate unique promptId per player per stage
+			-- Generate unique promptId per player per stage
 			local promptId = string.format("%s_S%d_%d_%0.6f", 
 				tableModel and tableModel.Name or "Table", 
 				stage, 
 				player.UserId, 
 				os.clock())
-			
+
+			-- Register BEFORE showing UI so server has prompt ready before client can respond
+			UIService.RegisterPrompt(player, promptId)
+
 			local choice = UIService.PromptChoice(player, {
 				promptId = promptId, -- Problem 1: Pass promptId
 				title = stage == 1 and "Double Down" or "SUDDEN DEATH",
@@ -215,6 +218,8 @@ function DoubleDown.Run(context)
 	
 	-- Stage 1
 	local rawChoices1, didPick1 = getChoices(players, 1, reward, rarity, phase1Sfx, tableModel)
+	UIService.ClearPrompt(p1)
+	UIService.ClearPrompt(p2)
 	print("[DoubleDown] Both choices received at", os.clock())
 	
 	-- Normalize Stage 1
@@ -258,7 +263,9 @@ function DoubleDown.Run(context)
 		
 		-- Stage 2: Sudden Death (Split/Steal only)
 		local rawChoices2, didPick2 = getChoices(players, 2, reward * 2, rarity, "DoubleDownSound", tableModel)
-		
+		UIService.ClearPrompt(p1)
+		UIService.ClearPrompt(p2)
+
 		-- Check abort flag after Stage 2 choices
 		if session and session.abortFlag then
 			print("[DoubleDown] Abort flag set after Stage 2 choices")
