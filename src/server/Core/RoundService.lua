@@ -653,18 +653,19 @@ function RoundService.StartRound(tableModel, players)
 				if p and p.Parent then
 					local stats = StatsService.GetStats(p)
 					if stats then
-						local StatsUpdate = Remotes:FindFirstChild("StatsUpdate")
-						if StatsUpdate then
-							local cashDelta = 0
-							if resultPayload.didDraw then
-								-- Draw always splits the POT
-								cashDelta = math.floor((resultPayload.rewardCash or 0) / 2)
-							elseif resultPayload.winnerUserId == p.UserId then
-								-- Single winner gets full POT
-								cashDelta = resultPayload.rewardCash or 0
-							end
-							StatsUpdate:FireClient(p, stats, cashDelta)
+						local cashDelta = 0
+						if resultPayload.didDraw then
+							-- Draw always splits the POT
+							cashDelta = math.floor((resultPayload.rewardCash or 0) / 2)
+						elseif resultPayload.winnerUserId == p.UserId then
+							-- Single winner gets full POT
+							cashDelta = resultPayload.rewardCash or 0
 						end
+
+						UIService.FireStatsUpdate(p, stats, {
+							kind = "round_result",
+							cashDelta = cashDelta
+						})
 					end
 				end
 			end

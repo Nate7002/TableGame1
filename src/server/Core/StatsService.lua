@@ -260,10 +260,18 @@ function StatsService.Init()
 				},
 				updatedAt = os.time()
 			}
-			DataService.SavePlayer(player, payload, "PlayerRemoving")
-			playerStats[userId] = nil
-			DataService.ClearCache(userId)
+			local saveSucceeded = DataService.SavePlayer(player, payload, "PlayerRemoving")
+			if saveSucceeded then
+				DataService.ClearCache(userId)
+			else
+				DebugService.Warn("STATS", "PLAYER_REMOVE_SAVE_FAILED", {
+					userId = userId,
+					playerName = playerName
+				})
+			end
 		end
+
+		playerStats[userId] = nil
 
 		activeShieldArms[userId] = nil
 		hydratingPlayers[userId] = nil
@@ -329,6 +337,86 @@ end
 
 function StatsService.HasShield(player)
 	return StatsService.GetShieldCount(player) > 0
+end
+
+function StatsService.GetGems(player)
+	if not (player and player.Parent) then return 0 end
+	local stats = ensureStats(player)
+	return stats.Gems or 0
+end
+
+function StatsService.HasGems(player, amount)
+	if type(amount) ~= "number" or amount <= 0 then
+		return false
+	end
+
+	return StatsService.GetGems(player) >= amount
+end
+
+function StatsService.AddGems(player, amount, reason)
+	if not (player and player.Parent) then return false end
+	if type(amount) ~= "number" or amount <= 0 then
+		DebugService.Warn("STATS", "GEMS_ADD_INVALID", {
+			userId = player.UserId,
+			amount = amount
+		})
+		return false
+	end
+
+	local stats = ensureStats(player)
+	stats.Gems = (stats.Gems or 0) + amount
+
+	asyncSavePlayer(player, reason or "GemsAdd")
+	StatsChanged:Fire(player)
+
+	DebugService.Info("STATS", "GEMS_ADDED", {
+		userId = player.UserId,
+		added = amount,
+		total = stats.Gems,
+		reason = reason
+	})
+
+	PushStatsUpdate(player)
+	return true
+end
+
+function StatsService.SpendGems(player, amount, reason)
+	if not (player and player.Parent) then return false end
+	if type(amount) ~= "number" or amount <= 0 then
+		DebugService.Warn("STATS", "GEMS_SPEND_INVALID", {
+			userId = player.UserId,
+			amount = amount
+		})
+		return false
+	end
+
+	local stats = ensureStats(player)
+	local current = stats.Gems or 0
+
+	if current < amount then
+		DebugService.Info("STATS", "GEMS_SPEND_INSUFFICIENT", {
+			userId = player.UserId,
+			requested = amount,
+			current = current,
+			reason = reason
+		})
+		return false
+	end
+
+	stats.Gems = math.max(0, current - amount)
+
+	asyncSavePlayer(player, reason or "GemsSpend")
+	StatsChanged:Fire(player)
+
+	DebugService.Info("STATS", "GEMS_SPENT", {
+		userId = player.UserId,
+		spent = amount,
+		remaining = stats.Gems,
+		reason = reason
+	})
+
+	PushStatsUpdate(player)
+	return true
 end
 
 function StatsService.AddShields(player, amount)

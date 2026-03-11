@@ -169,11 +169,16 @@ function DataService.SavePlayer(player, data, reason)
 		return false
 	end
 	
-	if not (player and player.Parent) then
+	if typeof(player) ~= "Instance" or not player:IsA("Player") then
 		return false
 	end
 	
 	local userId = player.UserId
+	if type(userId) ~= "number" or userId <= 0 then
+		return false
+	end
+
+	local playerName = player.Name or ("UserId_" .. tostring(userId))
 	local key = KEY_PREFIX .. tostring(userId)
 	
 	-- Throttle saves (except for critical reasons)
@@ -210,7 +215,7 @@ function DataService.SavePlayer(player, data, reason)
 	if success then
 		return true
 	else
-		warn(string.format("[DataService] Save failed for %s (%s)", player.Name, reason or "manual"))
+		warn(string.format("[DataService] Save failed for %s (%s)", playerName, reason or "manual"))
 		return false
 	end
 end

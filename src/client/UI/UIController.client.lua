@@ -482,14 +482,20 @@ end
 -- Step 6: Stats Update Feedback
 local StatsUpdate = Remotes:WaitForChild("StatsUpdate", 5)
 if StatsUpdate then
-	StatsUpdate.OnClientEvent:Connect(function(stats, cashDelta)
-		cashDelta = cashDelta or 0
-		
-		-- Ensure toast is available
+	StatsUpdate.OnClientEvent:Connect(function(stats, updatePayload)
+		setShieldCount(stats.Shields or 0)
+
+		if type(updatePayload) ~= "table" or updatePayload.kind ~= "round_result" then
+			return
+		end
+
+		local cashDelta = tonumber(updatePayload.cashDelta) or 0
+
+		-- Ensure toast is available only for round-result presentation.
 		if not toastComponent then
 			getScreenGui() -- Initialize if needed
 		end
-		setShieldCount(stats.Shields or 0)
+
 		if toastComponent then
 			-- Show reward toast if cash was earned this round
 			if cashDelta > 0 then

@@ -9,6 +9,7 @@ local LeaderboardService = require(Core:WaitForChild("LeaderboardService"))
 local PluginRegistry = require(Core:WaitForChild("PluginRegistry"))
 local PluginRunner = require(Core:WaitForChild("PluginRunner"))
 local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
 local chatHookedPlayers = {}
 
 DebugService.SetLevel("INFO")
@@ -40,6 +41,15 @@ local function attachDevChatHooks(player)
 			else
 				print("[Shield] Usage: /shields <amount> (e.g. /shields 5)")
 			end
+		elseif string.sub(msg, 1, 6) == "/gems " then
+			local amount = tonumber(string.sub(msg, 7))
+			if amount and amount > 0 then
+				local wholeAmount = math.floor(amount)
+				local ok = StatsService.AddGems(player, wholeAmount, "DevCommand")
+				print("[Gems] /gems", wholeAmount, "->", ok and "OK" or "FAIL", "inventory:", StatsService.GetGems(player))
+			else
+				print("[Gems] Usage: /gems <amount> (e.g. /gems 25)")
+			end
 		elseif msg == "/shieldtest" then
 			local players = Players:GetPlayers()
 			local playerA, playerB = players[1], players[2]
@@ -67,10 +77,12 @@ local function Start()
 	-- Initialize Stats Service (Step 6/7)
 	StatsService.Init()
 
-	-- Dev chat hooks must attach before slower init work so early joins can use /shields.
-	Players.PlayerAdded:Connect(attachDevChatHooks)
-	for _, player in ipairs(Players:GetPlayers()) do
-		attachDevChatHooks(player)
+	-- Dev chat hooks are Studio-only so published servers never expose test commands.
+	if RunService:IsStudio() then
+		Players.PlayerAdded:Connect(attachDevChatHooks)
+		for _, player in ipairs(Players:GetPlayers()) do
+			attachDevChatHooks(player)
+		end
 	end
 	
 	-- Initialize Leaderboard Service (Step 8 - Weekly + Overall leaderboards)

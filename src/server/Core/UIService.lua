@@ -157,11 +157,20 @@ function UIService.CloseStageUI(player)
 	Remotes.CloseStageUI:FireClient(player)
 end
 
-function UIService.FireStatsUpdate(player, stats)
+function UIService.FireStatsUpdate(player, stats, updatePayload)
 	if not (player and player.Parent) then return end
 	local remotes = getRemotes()
 	if remotes and remotes.StatsUpdate then
-		remotes.StatsUpdate:FireClient(player, stats, 0)
+		local payload = {
+			kind = "sync"
+		}
+
+		if type(updatePayload) == "table" then
+			payload.kind = updatePayload.kind or payload.kind
+			payload.cashDelta = tonumber(updatePayload.cashDelta) or 0
+		end
+
+		remotes.StatsUpdate:FireClient(player, stats, payload)
 	end
 end
 
