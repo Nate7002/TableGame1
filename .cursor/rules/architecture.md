@@ -42,4 +42,9 @@ RoundService
 ModifierService
 - Mutates round results through modifiers.
 
+DevTestService
+- Studio-only backend test orchestrator.
+- May set up scenarios and validate authority seams.
+- Must not own gameplay rules, stat mutation, or monetization rules.
+
 Systems must not duplicate gameplay state.

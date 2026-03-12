@@ -182,3 +182,43 @@ Clever solutions must never compromise structure.
 
 ---
 
+# Studio Backend Harness (NEW)
+
+TableGame1 now has a Studio-only backend harness for authoritative backend validation.
+
+### Use it when
+Use the harness for:
+- backend stat mutation checks
+- payout branch checks
+- VIP multiplier checks
+- monetization state inspection
+- repeatable regression testing
+
+### Current command surface
+- `/dumpstats`
+- `/dumpstats all`
+- `/dumpmonetization`
+- `/setvip on`
+- `/setvip off`
+- `/testround single_win_p1`
+- `/testround draw`
+- `/testround vip_single_win_p1`
+- `/testround vip_draw_mixed`
+- `/testround both_lose`
+
+### Rules
+- `DevTestService` is orchestration-only
+- `StatsService` remains the mutation authority
+- `MonetizationService` remains the VIP/multiplier authority
+- synthetic rivals must remain harness-local only
+- do not leak synthetic rivals into Players, UI, persistence, or leaderboards
+- do not turn the harness into a second gameplay engine
+
+### Testing doctrine
+Use the harness for backend correctness.
+Use manual playtests for:
+- UI feel
+- prompt timing
+- seat/join flow
+- real multiplayer behavior
+- release smoke checks

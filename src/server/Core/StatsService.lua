@@ -24,6 +24,34 @@ local function snapshotStats(stats)
 	}
 end
 
+local function formatRoundDebugStats(stats)
+	if not stats then
+		return "nil"
+	end
+
+	return string.format(
+		"cash=%d,wins=%d,streak=%d,games=%d",
+		tonumber(stats.Cash) or 0,
+		tonumber(stats.Wins) or 0,
+		tonumber(stats.Streak) or 0,
+		tonumber(stats.GamesPlayed) or 0
+	)
+end
+
+local function getRoundBranchLabel(resultPayload)
+	if resultPayload.isNeutral then
+		return "neutral"
+	elseif resultPayload.wasAborted then
+		return "aborted"
+	elseif resultPayload.didBothLose then
+		return "both_lose"
+	elseif resultPayload.didDraw then
+		return "draw"
+	end
+
+	return "single_winner"
+end
+
 local function PushStatsUpdate(player, statsOverride)
 	if not player then return end
 	local stats = statsOverride and snapshotStats(statsOverride) or StatsService.GetStats(player)
@@ -61,6 +89,16 @@ local processedRounds = {} -- [roundId] = true (idempotency guard)
 local activeShieldArms = {} -- [UserId] = true (armed for current round only)
 local hydratingPlayers = {} -- [UserId] = true while hydrate is running
 local hydratedPlayers = {} -- [UserId] = true after authoritative hydrate completes
+local nextStatsSlotId = 0
+local lastGetStatsLogAt = {}
+
+local function getStatsSlotId(stats)
+	if not stats then
+		return "nil"
+	end
+
+	return tostring(stats.__debugSlotId or "nil")
+end
 
 -- Week key: Monday 00:00 UTC, formatted YYYY_MM_DD
 local function getWeekKeyUTC(now)
@@ -101,6 +139,7 @@ end
 local function ensureStats(player)
 	local userId = player.UserId
 	if not playerStats[userId] then
+		nextStatsSlotId = nextStatsSlotId + 1
 		playerStats[userId] = {
 			Cash = DEFAULT_STATS.Cash,
 			Wins = DEFAULT_STATS.Wins,
@@ -114,7 +153,8 @@ local function ensureStats(player)
 			WeeklyStamp = DEFAULT_STATS.WeeklyStamp,
 			Gems = DEFAULT_STATS.Gems,
 			Shields = DEFAULT_STATS.Shields,
-			FreeShieldGranted = DEFAULT_STATS.FreeShieldGranted
+			FreeShieldGranted = DEFAULT_STATS.FreeShieldGranted,
+			__debugSlotId = nextStatsSlotId,
 		}
 	end
 	return playerStats[userId]
@@ -288,10 +328,27 @@ end
 
 function StatsService.GetStats(player)
 	if not player or not player.Parent then return nil end
+	local userId = player.UserId
+	local slotExistsBeforeRead = playerStats[userId] ~= nil
 	local stats = ensureStats(player)
+	local slotCreated = not slotExistsBeforeRead
 	if ensureWeekly(player, stats) then
 		asyncSavePlayer(player, "WeeklyReset")
 		StatsChanged:Fire(player)
+	end
+	local now = os.clock()
+	local shouldLogRead = slotCreated or (now - (lastGetStatsLogAt[userId] or 0)) >= 1.5
+	if shouldLogRead then
+		lastGetStatsLogAt[userId] = now
+		DebugService.Info("STATS", "GET_STATS_READ", {
+			userId = userId,
+			slotExistsBeforeRead = tostring(slotExistsBeforeRead),
+			slotCreated = tostring(slotCreated),
+			slotId = getStatsSlotId(stats),
+			playerParentValid = tostring(player.Parent ~= nil),
+			isDummyUserId = tostring(userId <= 0),
+			stats = formatRoundDebugStats(stats)
+		})
 	end
 	-- Return a copy to prevent external mutation
 	return {
@@ -572,9 +629,39 @@ function StatsService.ApplyRoundResult(playerA, playerB, resultPayload)
 		return
 	end
 	processedRounds[roundId] = true
+
+	local branchLabel = getRoundBranchLabel(resultPayload)
+	local hasCashAwardMap = type(resultPayload.cashAwardByUserId) == "table"
+	local playerAUserId = playerA and playerA.UserId or "nil"
+	local playerBUserId = playerB and playerB.UserId or "nil"
+	local slotAExists = playerA and playerStats[playerA.UserId] ~= nil or false
+	local slotBExists = playerB and playerStats[playerB.UserId] ~= nil or false
+
+	DebugService.Info("STATS", "ROUND_APPLY_ENTER", {
+		roundId = roundId,
+		branch = branchLabel,
+		playerAUserId = playerAUserId,
+		playerBUserId = playerBUserId,
+		didDraw = tostring(resultPayload.didDraw == true),
+		didBothLose = tostring(resultPayload.didBothLose == true),
+		wasAborted = tostring(resultPayload.wasAborted == true),
+		isNeutral = tostring(resultPayload.isNeutral == true),
+		hasCashAwardMap = tostring(hasCashAwardMap),
+		slotAExists = tostring(slotAExists),
+		slotBExists = tostring(slotBExists),
+		slotAId = playerA and getStatsSlotId(playerStats[playerA.UserId]) or "nil",
+		slotBId = playerB and getStatsSlotId(playerStats[playerB.UserId]) or "nil",
+		mutationKeyA = playerAUserId,
+		mutationKeyB = playerBUserId
+	})
 	
 	-- Neutral: no rewards, no stat changes (both timeout)
 	if resultPayload.isNeutral then
+		DebugService.Info("STATS", "ROUND_APPLY_EXIT", {
+			roundId = roundId,
+			branch = branchLabel,
+			status = "neutral"
+		})
 		DebugService.Info("STATS", "ROUND_NEUTRAL", {
 			roundId = roundId
 		})
@@ -583,6 +670,11 @@ function StatsService.ApplyRoundResult(playerA, playerB, resultPayload)
 	
 	-- Abort: no rewards, no stat changes
 	if resultPayload.wasAborted then
+		DebugService.Info("STATS", "ROUND_APPLY_EXIT", {
+			roundId = roundId,
+			branch = branchLabel,
+			status = "aborted"
+		})
 		DebugService.Info("STATS", "ROUND_ABORTED", {
 			roundId = roundId
 		})
@@ -596,10 +688,20 @@ function StatsService.ApplyRoundResult(playerA, playerB, resultPayload)
 	
 	-- Validate players
 	if not (playerA and playerA.Parent) then
+		DebugService.Info("STATS", "ROUND_APPLY_EXIT", {
+			roundId = roundId,
+			branch = branchLabel,
+			status = "invalid_player_a"
+		})
 		warn("[StatsService] PlayerA invalid")
 		return
 	end
 	if not (playerB and playerB.Parent) then
+		DebugService.Info("STATS", "ROUND_APPLY_EXIT", {
+			roundId = roundId,
+			branch = branchLabel,
+			status = "invalid_player_b"
+		})
 		warn("[StatsService] PlayerB invalid")
 		return
 	end
@@ -620,6 +722,20 @@ function StatsService.ApplyRoundResult(playerA, playerB, resultPayload)
 	end
 
 	local roundPlayers = {playerA, playerB}
+	local beforeStatsA = formatRoundDebugStats(statsA)
+	local beforeStatsB = formatRoundDebugStats(statsB)
+
+	local function getFinalCashAward(player, legacyAward)
+		if not player then
+			return 0
+		end
+
+		if hasCashAwardMap then
+			return math.max(0, math.floor(tonumber(resultPayload.cashAwardByUserId[player.UserId]) or 0))
+		end
+
+		return math.max(0, math.floor(tonumber(legacyAward) or 0))
+	end
 
 	local function applyShieldPayloadEffects(player)
 		local userId = player.UserId
@@ -669,20 +785,24 @@ function StatsService.ApplyRoundResult(playerA, playerB, resultPayload)
 	elseif resultPayload.didDraw then
 		-- Case 2: Draw / Split-Split (both win)
 		local splitReward = math.floor(rewardCash / 2)
+		local awardA = getFinalCashAward(playerA, splitReward)
+		local awardB = getFinalCashAward(playerB, splitReward)
 		DebugService.Info("STATS", "ROUND_DRAW", {
 			roundId = roundId,
-			reward = rewardCash
+			baseRewardCash = rewardCash,
+			awardA = awardA,
+			awardB = awardB
 		})
 		
 		-- Player A: cash + wins + streak
-		statsA.Cash = statsA.Cash + splitReward
+		statsA.Cash = statsA.Cash + awardA
 		statsA.Wins = statsA.Wins + 1
 		statsA.Streak = statsA.Streak + 1
 		statsA.MaxStreak = math.max(statsA.MaxStreak, statsA.Streak)
 		statsA.WeeklyMaxStreak = math.max(statsA.WeeklyMaxStreak, statsA.Streak)
 		
 		-- Player B: cash + wins + streak
-		statsB.Cash = statsB.Cash + splitReward
+		statsB.Cash = statsB.Cash + awardB
 		statsB.Wins = statsB.Wins + 1
 		statsB.Streak = statsB.Streak + 1
 		statsB.MaxStreak = math.max(statsB.MaxStreak, statsB.Streak)
@@ -693,6 +813,13 @@ function StatsService.ApplyRoundResult(playerA, playerB, resultPayload)
 		local winnerId = resultPayload.winnerUserId
 		
 		if not winnerId then
+			DebugService.Info("STATS", "ROUND_APPLY_EXIT", {
+				roundId = roundId,
+				branch = branchLabel,
+				status = "missing_winner",
+				beforeStatsA = beforeStatsA,
+				beforeStatsB = beforeStatsB
+			})
 			warn("[StatsService] No winner specified and not draw/abort - unexpected")
 			return
 		end
@@ -710,14 +837,22 @@ function StatsService.ApplyRoundResult(playerA, playerB, resultPayload)
 		end
 
 		if not winner then
+			DebugService.Info("STATS", "ROUND_APPLY_EXIT", {
+				roundId = roundId,
+				branch = branchLabel,
+				status = "winner_mismatch",
+				beforeStatsA = beforeStatsA,
+				beforeStatsB = beforeStatsB
+			})
 			warn("[StatsService] Winner UserId does not match either player")
 			return
 		end
 
 		local winnerStats = ensureStats(winner)
+		local winnerAward = getFinalCashAward(winner, rewardCash)
 
 		-- Apply winner rewards
-		winnerStats.Cash = winnerStats.Cash + rewardCash
+		winnerStats.Cash = winnerStats.Cash + winnerAward
 		winnerStats.Wins = winnerStats.Wins + 1
 		winnerStats.Streak = winnerStats.Streak + 1
 		winnerStats.MaxStreak = math.max(winnerStats.MaxStreak, winnerStats.Streak)
@@ -726,7 +861,8 @@ function StatsService.ApplyRoundResult(playerA, playerB, resultPayload)
 		DebugService.Info("STATS", "ROUND_WINNER", {
 			roundId = roundId,
 			winnerId = winner.UserId,
-			reward = rewardCash,
+			baseRewardCash = rewardCash,
+			reward = winnerAward,
 			streak = winnerStats.Streak
 		})
 
@@ -756,6 +892,17 @@ function StatsService.ApplyRoundResult(playerA, playerB, resultPayload)
 	asyncSavePlayer(playerB, "RoundResult")
 	StatsChanged:Fire(playerA)
 	StatsChanged:Fire(playerB)
+	DebugService.Info("STATS", "ROUND_APPLY_EXIT", {
+		roundId = roundId,
+		branch = branchLabel,
+		status = "ok",
+		afterStatsA = formatRoundDebugStats(statsA),
+		afterStatsB = formatRoundDebugStats(statsB),
+		beforeStatsA = beforeStatsA,
+		beforeStatsB = beforeStatsB,
+		slotAId = getStatsSlotId(statsA),
+		slotBId = getStatsSlotId(statsB)
+	})
 end
 
 -- Add donation to player's TotalDonated. Validates amount > 0, saves async, fires StatsChanged.

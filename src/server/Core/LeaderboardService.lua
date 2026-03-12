@@ -53,6 +53,14 @@ local rotateCountdown = ROTATE_INTERVAL
 local weeklyOnFront = true
 local NAMESPACE = "PROD"
 
+local function isTrackablePlayer(player)
+	return typeof(player) == "Instance"
+		and player:IsA("Player")
+		and player.Parent ~= nil
+		and type(player.UserId) == "number"
+		and player.UserId > 0
+end
+
 local function resolveNamespace()
 	if type(DataService.GetNamespace) == "function" then
 		local ok, ns = pcall(DataService.GetNamespace, DataService)
@@ -687,7 +695,7 @@ function LeaderboardService.Init()
 
 	-- Stats changed: coalesce (debounced) + track for flush
 	StatsService.StatsChanged:Connect(function(player)
-		if not player or not player.Parent then return end
+		if not isTrackablePlayer(player) then return end
 		local stats = StatsService.GetStats(player)
 		if stats then
 			updatePlayerInStores(player.UserId, stats, false)

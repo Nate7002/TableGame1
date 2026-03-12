@@ -1,6 +1,6 @@
-# ChatGPT Operating Rules — TableGame1 (V7)
+# ChatGPT Operating Rules — TableGame1 (V9)
 
-Last updated: 2/25/2026
+Last updated: 3/11/2026
 
 This document defines how ChatGPT collaborates on TableGame1 and how prompts for Cursor are generated.
 
@@ -12,7 +12,7 @@ This is a behavioral + workflow contract.
 
 When conflicts arise, follow this order:
 
-1. TABLEGAME1\_SOURCE\_OF\_TRUTH\_V5.md
+1. TABLEGAME1\_SOURCE\_OF\_TRUTH\_V6.md
 2. universal\_ui\_operating\_standard.md (for UI matters)
 3. This document
 4. Cursor project rules in `.cursor/rules/`
@@ -219,3 +219,40 @@ If a UI change violates the UI Operating Standard, stop and correct the approach
 
 Cursor UI rules are enforcement layers that mirror this document.
 
+---
+
+## 17) Backend Harness Rule (NEW)
+
+When working on backend validation for TableGame1, prefer the Studio-only backend harness over fragile ad hoc command-bar/module-state checks.
+
+Approved backend harness surface includes:
+- `/dumpstats`
+- `/dumpstats all`
+- `/dumpmonetization`
+- `/setvip on`
+- `/setvip off`
+- `/testround single_win_p1`
+- `/testround draw`
+- `/testround vip_single_win_p1`
+- `/testround vip_draw_mixed`
+- `/testround both_lose`
+
+Use the harness for:
+- stat mutation validation
+- payout validation
+- VIP validation
+- branch regression testing
+
+Do not treat harness success as a replacement for:
+- manual UX checks
+- real 2-player flow checks
+- release smoke tests
+- Marketplace/PROD verification
+
+When proposing backend testing prompts:
+- prefer harness scenarios first
+- prefer real authority seams
+- avoid fake global player systems
+- avoid duplicating production game logic inside test code
+
+---

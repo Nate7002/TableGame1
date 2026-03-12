@@ -2,8 +2,10 @@ local Players = game:GetService("Players")
 local Workspace = game:GetService("Workspace")
 
 local Core = script.Parent
+local DebugService = require(Core.DebugService)
 local FXService = require(Core.FXService)
 local ModifierService = require(Core.ModifierService)
+local MonetizationService = require(Core.MonetizationService)
 local PluginRunner = require(Core.PluginRunner)
 local StatsService = require(Core.StatsService)
 local TableService = require(Core.TableService) -- BUG FIX A: Seat reset integration
@@ -75,6 +77,108 @@ local function playersToUniqueUserIds(playersArray)
 	end
 
 	return userIds
+end
+
+local function resolveCashAwards(playerA, playerB, resultPayload)
+	local baseRewardCash = math.max(0, math.floor(tonumber(resultPayload.rewardCash) or 0))
+	local players = { playerA, playerB }
+	local cashAwardByUserId = {}
+	local multiplierByUserId = {}
+
+	for _, player in ipairs(players) do
+		if player then
+			cashAwardByUserId[player.UserId] = 0
+			multiplierByUserId[player.UserId] = 1
+		end
+	end
+
+	if baseRewardCash <= 0 or resultPayload.isNeutral or resultPayload.wasAborted or resultPayload.didBothLose then
+		return cashAwardByUserId, multiplierByUserId
+	end
+
+	if resultPayload.didDraw then
+		local splitReward = math.floor(baseRewardCash / 2)
+		for _, player in ipairs(players) do
+			if player and player.Parent then
+				local multiplier = math.max(1, tonumber(MonetizationService.GetRewardMultiplier(player)) or 1)
+				multiplierByUserId[player.UserId] = multiplier
+				cashAwardByUserId[player.UserId] = math.max(0, math.floor(splitReward * multiplier))
+			end
+		end
+		return cashAwardByUserId, multiplierByUserId
+	end
+
+	for _, player in ipairs(players) do
+		if player and player.Parent and player.UserId == resultPayload.winnerUserId then
+			local multiplier = math.max(1, tonumber(MonetizationService.GetRewardMultiplier(player)) or 1)
+			multiplierByUserId[player.UserId] = multiplier
+			cashAwardByUserId[player.UserId] = math.max(0, math.floor(baseRewardCash * multiplier))
+			break
+		end
+	end
+
+	return cashAwardByUserId, multiplierByUserId
+end
+
+local function formatPayoutLogEntries(playerA, playerB, cashAwardByUserId, multiplierByUserId)
+	local entries = {}
+
+	for _, player in ipairs({ playerA, playerB }) do
+		if player then
+			table.insert(entries, string.format(
+				"%d:x%s->$%d",
+				player.UserId,
+				tostring(multiplierByUserId[player.UserId] or 1),
+				tonumber(cashAwardByUserId[player.UserId]) or 0
+			))
+		end
+	end
+
+	return table.concat(entries, ",")
+end
+
+local function formatCashAwardLogEntries(playerA, playerB, cashAwardByUserId)
+	local entries = {}
+
+	for _, player in ipairs({ playerA, playerB }) do
+		if player then
+			table.insert(entries, string.format(
+				"%d->$%d",
+				player.UserId,
+				tonumber(cashAwardByUserId and cashAwardByUserId[player.UserId]) or 0
+			))
+		end
+	end
+
+	return table.concat(entries, ",")
+end
+
+local function getRoundBranchLabel(resultPayload)
+	if resultPayload.isNeutral then
+		return "neutral"
+	elseif resultPayload.wasAborted then
+		return "aborted"
+	elseif resultPayload.didBothLose then
+		return "both_lose"
+	elseif resultPayload.didDraw then
+		return "draw"
+	end
+
+	return "single_winner"
+end
+
+local function formatRoundDebugStats(stats)
+	if not stats then
+		return "nil"
+	end
+
+	return string.format(
+		"cash=%d,wins=%d,streak=%d,games=%d",
+		tonumber(stats.Cash) or 0,
+		tonumber(stats.Wins) or 0,
+		tonumber(stats.Streak) or 0,
+		tonumber(stats.GamesPlayed) or 0
+	)
 end
 
 local function freezePlayer(player, shouldFreeze)
@@ -609,7 +713,7 @@ function RoundService.StartRound(tableModel, players)
 		
 		local resultPayload = {
 			roundId = roundId,
-			rewardCash = data.reward or 0,
+			rewardCash = math.max(0, math.floor(tonumber(data.reward) or 0)),
 			wasAborted = false,
 			isNeutral = isNeutral,
 			streakProtectedLoserUserIds = {},
@@ -634,9 +738,80 @@ function RoundService.StartRound(tableModel, players)
 			resultPayload.streakProtectedLoserUserIds = playersToUniqueUserIds(roundContext.streakProtectedLosers)
 			resultPayload.shieldConsumeUserIds = playersToUniqueUserIds(roundContext.shieldConsumePlayers)
 			resultPayload.shieldDisarmUserIds = playersToUniqueUserIds(roundContext.shieldDisarmPlayers)
+			local payoutMultiplierByUserId
+			resultPayload.cashAwardByUserId, payoutMultiplierByUserId = resolveCashAwards(playerA, playerB, resultPayload)
+
+			DebugService.Info("ROUND", "PAYOUT_RESOLVED", {
+				roundId = roundId,
+				baseRewardCash = resultPayload.rewardCash or 0,
+				payouts = formatPayoutLogEntries(playerA, playerB, resultPayload.cashAwardByUserId, payoutMultiplierByUserId)
+			})
 			
 			-- Apply stats
+			local roundBranch = getRoundBranchLabel(resultPayload)
+			local livePlayerA = playerA and Players:GetPlayerByUserId(playerA.UserId) or nil
+			local livePlayerB = playerB and Players:GetPlayerByUserId(playerB.UserId) or nil
+			DebugService.Info("ROUND", "ROUND_APPLY_PRE", {
+				roundId = roundId,
+				branch = roundBranch,
+				playerAUserId = playerA and playerA.UserId or "nil",
+				playerBUserId = playerB and playerB.UserId or "nil",
+				playerAParentValid = tostring(playerA and playerA.Parent ~= nil),
+				playerBParentValid = tostring(playerB and playerB.Parent ~= nil),
+				liveRefFoundA = tostring(livePlayerA ~= nil),
+				liveRefFoundB = tostring(livePlayerB ~= nil),
+				sameAsLiveA = tostring(playerA ~= nil and playerA == livePlayerA),
+				sameAsLiveB = tostring(playerB ~= nil and playerB == livePlayerB),
+				baseRewardCash = resultPayload.rewardCash or 0,
+				cashAwards = formatCashAwardLogEntries(playerA, playerB, resultPayload.cashAwardByUserId)
+			})
 			StatsService.ApplyRoundResult(playerA, playerB, resultPayload)
+
+			local livePlayerAPost = playerA and Players:GetPlayerByUserId(playerA.UserId) or nil
+			local livePlayerBPost = playerB and Players:GetPlayerByUserId(playerB.UserId) or nil
+			local postApplyStatsOriginalA = playerA and StatsService.GetStats(playerA) or nil
+			local postApplyStatsOriginalB = playerB and StatsService.GetStats(playerB) or nil
+			local postApplyStatsLiveA = livePlayerAPost and StatsService.GetStats(livePlayerAPost) or nil
+			local postApplyStatsLiveB = livePlayerBPost and StatsService.GetStats(livePlayerBPost) or nil
+
+			DebugService.Info("ROUND", "ROUND_APPLY_POST", {
+				roundId = roundId,
+				branch = roundBranch,
+				originalRefValidA = tostring(playerA and playerA.Parent ~= nil),
+				originalRefValidB = tostring(playerB and playerB.Parent ~= nil),
+				liveRefFoundA = tostring(livePlayerAPost ~= nil),
+				liveRefFoundB = tostring(livePlayerBPost ~= nil),
+				originalStatsA = formatRoundDebugStats(postApplyStatsOriginalA),
+				originalStatsB = formatRoundDebugStats(postApplyStatsOriginalB),
+				liveStatsA = formatRoundDebugStats(postApplyStatsLiveA),
+				liveStatsB = formatRoundDebugStats(postApplyStatsLiveB),
+				cashDeltaA = math.max(0, math.floor(tonumber(resultPayload.cashAwardByUserId and resultPayload.cashAwardByUserId[playerA and playerA.UserId]) or 0)),
+				cashDeltaB = math.max(0, math.floor(tonumber(resultPayload.cashAwardByUserId and resultPayload.cashAwardByUserId[playerB and playerB.UserId]) or 0))
+			})
+
+			task.delay(2, function()
+				local delayedLivePlayerA = playerA and Players:GetPlayerByUserId(playerA.UserId) or nil
+				local delayedLivePlayerB = playerB and Players:GetPlayerByUserId(playerB.UserId) or nil
+				local delayedStatsOriginalA = playerA and StatsService.GetStats(playerA) or nil
+				local delayedStatsOriginalB = playerB and StatsService.GetStats(playerB) or nil
+				local delayedStatsLiveA = delayedLivePlayerA and StatsService.GetStats(delayedLivePlayerA) or nil
+				local delayedStatsLiveB = delayedLivePlayerB and StatsService.GetStats(delayedLivePlayerB) or nil
+
+				DebugService.Info("ROUND", "ROUND_APPLY_DELAYED_READ", {
+					roundId = roundId,
+					branch = roundBranch,
+					originalRefValidA = tostring(playerA and playerA.Parent ~= nil),
+					originalRefValidB = tostring(playerB and playerB.Parent ~= nil),
+					liveRefFoundA = tostring(delayedLivePlayerA ~= nil),
+					liveRefFoundB = tostring(delayedLivePlayerB ~= nil),
+					originalStatsA = formatRoundDebugStats(delayedStatsOriginalA),
+					originalStatsB = formatRoundDebugStats(delayedStatsOriginalB),
+					liveStatsA = formatRoundDebugStats(delayedStatsLiveA),
+					liveStatsB = formatRoundDebugStats(delayedStatsLiveB),
+					refsAgreeA = tostring(playerA ~= nil and playerA == delayedLivePlayerA),
+					refsAgreeB = tostring(playerB ~= nil and playerB == delayedLivePlayerB)
+				})
+			end)
 		end
 		
 		-- Log
@@ -653,14 +828,7 @@ function RoundService.StartRound(tableModel, players)
 				if p and p.Parent then
 					local stats = StatsService.GetStats(p)
 					if stats then
-						local cashDelta = 0
-						if resultPayload.didDraw then
-							-- Draw always splits the POT
-							cashDelta = math.floor((resultPayload.rewardCash or 0) / 2)
-						elseif resultPayload.winnerUserId == p.UserId then
-							-- Single winner gets full POT
-							cashDelta = resultPayload.rewardCash or 0
-						end
+						local cashDelta = math.max(0, math.floor(tonumber(resultPayload.cashAwardByUserId and resultPayload.cashAwardByUserId[p.UserId]) or 0))
 
 						UIService.FireStatsUpdate(p, stats, {
 							kind = "round_result",

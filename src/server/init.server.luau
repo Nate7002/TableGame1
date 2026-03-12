@@ -5,6 +5,7 @@ local TableService = require(Core:WaitForChild("TableService"))
 local RoundService = require(Core:WaitForChild("RoundService"))
 local UIService = require(Core:WaitForChild("UIService"))
 local StatsService = require(Core:WaitForChild("StatsService"))
+local MonetizationService = require(Core:WaitForChild("MonetizationService"))
 local LeaderboardService = require(Core:WaitForChild("LeaderboardService"))
 local PluginRegistry = require(Core:WaitForChild("PluginRegistry"))
 local PluginRunner = require(Core:WaitForChild("PluginRunner"))
@@ -77,12 +78,17 @@ local function Start()
 	-- Initialize Stats Service (Step 6/7)
 	StatsService.Init()
 
+	-- Initialize Monetization Service (Step 10A - backend authority only)
+	MonetizationService.Init()
+
 	-- Dev chat hooks are Studio-only so published servers never expose test commands.
 	if RunService:IsStudio() then
+		local DevTestService = require(Core:WaitForChild("DevTestService"))
 		Players.PlayerAdded:Connect(attachDevChatHooks)
 		for _, player in ipairs(Players:GetPlayers()) do
 			attachDevChatHooks(player)
 		end
+		DevTestService.Init()
 	end
 	
 	-- Initialize Leaderboard Service (Step 8 - Weekly + Overall leaderboards)
