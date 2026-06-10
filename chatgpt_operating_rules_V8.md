@@ -1,4 +1,4 @@
-# ChatGPT Operating Rules — TableGame1 (V9)
+# ChatGPT Operating Rules — TableGame1 (V8)
 
 Last updated: 3/11/2026
 

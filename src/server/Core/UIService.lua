@@ -1,6 +1,8 @@
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 
+local DebugService = require(script.Parent:WaitForChild("DebugService"))
+
 local UIService = {}
 
 -- Constants
@@ -49,6 +51,10 @@ local function getRemotes()
 		UseShieldFailed = ensureEvent("UseShieldFailed"),
 		ShieldArmed = ensureEvent("ShieldArmed"),
 		ShieldChanged = ensureEvent("ShieldChanged"),
+		PromptMonetizationProduct = ensureEvent("PromptMonetizationProduct"),
+		MonetizationSnapshot = ensureEvent("MonetizationSnapshot"),
+		RestoreOfferState = ensureEvent("RestoreOfferState"),
+		RequestRestorePurchase = ensureEvent("RequestRestorePurchase"),
 		OpponentPicked = ensureEvent("OpponentPicked"),
 		CinematicStoppedAck = ensureEvent("CinematicStoppedAck"),
 		-- Task: Rename ack to match what it actually means
@@ -187,6 +193,40 @@ function UIService.FireShieldArmed(player)
 	local remotes = getRemotes()
 	if remotes and remotes.ShieldArmed then
 		remotes.ShieldArmed:FireClient(player)
+	end
+end
+
+function UIService.FireMonetizationPrompt(player, productId, source)
+	if not (player and player.Parent) then return end
+	local remotes = getRemotes()
+	if remotes and remotes.PromptMonetizationProduct then
+		remotes.PromptMonetizationProduct:FireClient(player, {
+			productId = tonumber(productId) or 0,
+			source = tostring(source or ""),
+		})
+	end
+end
+
+function UIService.FireMonetizationSnapshot(player, snapshot)
+	if not (player and player.Parent) then return end
+	local remotes = getRemotes()
+	if remotes and remotes.MonetizationSnapshot then
+		remotes.MonetizationSnapshot:FireClient(player, snapshot)
+	end
+end
+
+function UIService.FireRestoreOfferState(player, snapshot)
+	if not (player and player.Parent) then return end
+	local remotes = getRemotes()
+	if remotes and remotes.RestoreOfferState then
+		DebugService.Info("UI", "RESTORE_PROBE_FIRE_REMOTE", {
+			playerName = player.Name,
+			playerUserId = player.UserId,
+			active = snapshot and snapshot.Active == true,
+			reason = snapshot and snapshot.Reason or nil,
+			roundId = snapshot and snapshot.RoundId or nil,
+		})
+		remotes.RestoreOfferState:FireClient(player, snapshot)
 	end
 end
 

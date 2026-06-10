@@ -2,6 +2,7 @@ local ServerStorage = game:GetService("ServerStorage")
 local Workspace = game:GetService("Workspace")
 local Players = game:GetService("Players")
 
+local MonetizationService = require(script.Parent:WaitForChild("MonetizationService"))
 local StatsService = require(script.Parent:WaitForChild("StatsService"))
 local UIService = require(script.Parent:WaitForChild("UIService"))
 
@@ -87,6 +88,8 @@ local function disarmPlayerOnExit(player, reason)
 	if not player then return end
 
 	StatsService.DisarmShield(player)
+	-- TableService clears restore UI state for seat-lifecycle teardown.
+	MonetizationService.ClearRestoreOffer(player, tostring(reason or "SeatExit"))
 end
 
 local function validateShieldArmingRequest(player)
@@ -535,9 +538,12 @@ function TableService.Init()
 				end
 
 				if shields <= 0 then
-					warn("[Shield] Player tried to use shield but has none:", player.Name)
-					if UseShieldFailed then
-						UseShieldFailed:FireClient(player, "NoShields")
+					local prompted, promptReason = MonetizationService.PromptShieldPurchase(player)
+					if not prompted then
+						warn("[Shield] Shield prompt unavailable for", player.Name, promptReason)
+						if UseShieldFailed then
+							UseShieldFailed:FireClient(player, promptReason or "NoShields")
+						end
 					end
 					return
 				end

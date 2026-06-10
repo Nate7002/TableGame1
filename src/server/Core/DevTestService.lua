@@ -8,18 +8,25 @@ local StatsService = require(Core:WaitForChild("StatsService"))
 local DevTestService = {}
 
 local COMMAND_PREFIX = "[DevTest]"
+local PRODUCT_DECISION = Enum.ProductPurchaseDecision
 local ROUND_REWARD_CASH = 100
 local COMPARED_FIELDS = { "Cash", "Wins", "Streak", "MaxStreak", "GamesPlayed" }
+local NO_MUTATION_FIELDS = { "Cash", "Gems", "Shields", "Wins", "Streak", "MaxStreak", "GamesPlayed" }
 local trackedPlayers = {}
 local initialized = false
 local nextSyntheticUserId = -1
 local scenarioRegistry = {}
 
-local function isRealPlayer(player)
+local function positiveInteger(value)
+	return type(value) == "number" and value > 0 and math.floor(value) == value
+end
+
+local function canUseHarnessCommands(player)
 	return typeof(player) == "Instance"
 		and player:IsA("Player")
 		and type(player.UserId) == "number"
-		and player.UserId > 0
+		and math.floor(player.UserId) == player.UserId
+		and (player.UserId > 0 or (RunService:IsStudio() and player.UserId < 0))
 end
 
 local function trimMessage(message)
@@ -194,6 +201,48 @@ local function buildBothLoseAfter(beforeSnapshot)
 	}
 end
 
+local function buildProjectedRestoreStreak(preLossStreak, tier)
+	if not positiveInteger(preLossStreak) then
+		return nil
+	end
+
+	if not positiveInteger(tier) or tier < 1 or tier > 3 then
+		return nil
+	end
+
+	return math.max(1, math.ceil(preLossStreak * tier / 3))
+end
+
+local function buildExpectedProjectedRestoreStreak(player, preLossStreak, tier)
+	if positiveInteger(preLossStreak) and MonetizationService.PlayerHasVIP(player) then
+		return preLossStreak
+	end
+
+	return buildProjectedRestoreStreak(preLossStreak, tier)
+end
+
+local function buildMonetizationOutcomeContext(resultPayload, participants, preRoundStatsByUserId)
+	local loserUserId = resultPayload and resultPayload.loserUserId
+	local loserPreLossStats = type(preRoundStatsByUserId) == "table" and preRoundStatsByUserId[loserUserId] or nil
+	local loserPreLossStreak = type(loserPreLossStats) == "table" and tonumber(loserPreLossStats.Streak) or nil
+
+	return {
+		RoundId = resultPayload and resultPayload.roundId,
+		ParticipantUserIds = {
+			participants[1] and participants[1].UserId,
+			participants[2] and participants[2].UserId,
+		},
+		WinnerUserId = resultPayload and resultPayload.winnerUserId,
+		LoserUserId = resultPayload and resultPayload.loserUserId,
+		LoserPreLossStreak = loserPreLossStreak,
+		DidDraw = resultPayload and resultPayload.didDraw == true,
+		DidBothLose = resultPayload and resultPayload.didBothLose == true,
+		WasAborted = resultPayload and resultPayload.wasAborted == true,
+		IsNeutral = resultPayload and resultPayload.isNeutral == true,
+		StreakProtectedLoserUserIds = (resultPayload and resultPayload.streakProtectedLoserUserIds) or {},
+	}
+end
+
 local function addCleanupTask(context, cleanupTask)
 	if type(cleanupTask) ~= "function" then
 		return
@@ -361,6 +410,22 @@ scenarioRegistry = {
 			}
 		end,
 	},
+	single_lose_p1 = {
+		buildResultPayload = function(context)
+			return {
+				roundId = buildRoundId(context.scenarioName, context.caller),
+				rewardCash = context.rewardCash,
+				winnerUserId = context.syntheticRival.UserId,
+				loserUserId = context.caller.UserId,
+			}
+		end,
+		buildExpectedAfter = function(context)
+			return {
+				caller = buildLoserAfter(context.beforeCaller),
+				synthetic = buildWinnerAfter(context.beforeSynthetic, context.rewardCash),
+			}
+		end,
+	},
 	draw = {
 		buildResultPayload = function(context)
 			return {
@@ -508,6 +573,12 @@ local function handleDumpMonetization(player)
 		return
 	end
 
+	local routingSnapshot = MonetizationService.GetReceiptRoutingSnapshot()
+	local receiptKinds = "none"
+	if routingSnapshot and #(routingSnapshot.RegisteredReceiptKinds or {}) > 0 then
+		receiptKinds = table.concat(routingSnapshot.RegisteredReceiptKinds, ",")
+	end
+
 	print(string.format(
 		"%s monetization uid=%d vip=%s multiplier=%s override=%s",
 		COMMAND_PREFIX,
@@ -515,6 +586,35 @@ local function handleDumpMonetization(player)
 		tostring(snapshot.HasVIP),
 		tostring(snapshot.RewardMultiplier),
 		formatStudioOverride(snapshot)
+	))
+	print(string.format(
+		"%s receipt-routing initialized=%s bound=%s configured=%d indexed=%d kinds=%s",
+		COMMAND_PREFIX,
+		tostring(routingSnapshot and routingSnapshot.Initialized == true),
+		tostring(routingSnapshot and routingSnapshot.ProcessReceiptBound == true),
+		tonumber(routingSnapshot and routingSnapshot.ConfiguredProductCount) or 0,
+		tonumber(routingSnapshot and routingSnapshot.IndexedProductCount) or 0,
+		receiptKinds
+	))
+
+	local restoreSnapshot = MonetizationService.GetRestoreOfferSnapshot(player)
+	local restoreKeys = "none"
+	if restoreSnapshot and #(restoreSnapshot.ValidRestoreProductKeys or {}) > 0 then
+		restoreKeys = table.concat(restoreSnapshot.ValidRestoreProductKeys, ",")
+	end
+
+	print(string.format(
+		"%s restore-offer active=%s reason=%s remaining=%0.2fs cooldown=%0.2fs preLoss=%s selectedKey=%s selectedTier=%s projected=%s keys=%s",
+		COMMAND_PREFIX,
+		tostring(restoreSnapshot and restoreSnapshot.Active == true),
+		tostring(restoreSnapshot and restoreSnapshot.Reason or "NoActiveOffer"),
+		tonumber(restoreSnapshot and restoreSnapshot.SecondsRemaining) or 0,
+		tonumber(restoreSnapshot and restoreSnapshot.CooldownRemaining) or 0,
+		tostring(restoreSnapshot and restoreSnapshot.PreLossStreak),
+		tostring(restoreSnapshot and restoreSnapshot.SelectedRestoreProductKey),
+		tostring(restoreSnapshot and restoreSnapshot.SelectedRestoreTier),
+		tostring(restoreSnapshot and restoreSnapshot.ProjectedRestoredStreak),
+		restoreKeys
 	))
 end
 
@@ -538,6 +638,265 @@ local function handleSetVip(player, rawMode)
 
 	print(string.format("%s /setvip %s caller=%s", COMMAND_PREFIX, mode, player.Name))
 	handleDumpMonetization(player)
+end
+
+local function getReceiptTestExpectation(productConfig, beforeSnapshot, restoreValidationBefore)
+	local expectation = {
+		Decision = PRODUCT_DECISION.NotProcessedYet,
+		ExpectedGemDelta = 0,
+		ExpectedShieldDelta = 0,
+		ExpectedKind = "Unknown",
+		ExpectedSnapshot = {
+			Cash = beforeSnapshot.Cash,
+			Wins = beforeSnapshot.Wins,
+			Streak = beforeSnapshot.Streak,
+			MaxStreak = beforeSnapshot.MaxStreak,
+			GamesPlayed = beforeSnapshot.GamesPlayed,
+		},
+		ExpectRestoreConsumed = false,
+		ProjectedRestoreStreak = nil,
+	}
+
+	if type(productConfig) ~= "table" then
+		return expectation
+	end
+
+	expectation.ExpectedKind = tostring(productConfig.Kind or "Unknown")
+	local amount = tonumber(productConfig.Amount)
+	if productConfig.Kind == "Gems" and amount and amount > 0 and math.floor(amount) == amount then
+		expectation.Decision = PRODUCT_DECISION.PurchaseGranted
+		expectation.ExpectedGemDelta = amount
+		return expectation
+	end
+
+	if productConfig.Kind == "Shields" and amount and amount > 0 and math.floor(amount) == amount then
+		local currentShields = type(beforeSnapshot) == "table" and (tonumber(beforeSnapshot.Shields) or 0) or 0
+		if currentShields < StatsService.GetMaxShields() then
+			expectation.Decision = PRODUCT_DECISION.PurchaseGranted
+			expectation.ExpectedShieldDelta = amount
+		end
+		return expectation
+	end
+
+	if productConfig.Kind == "Restore" then
+		local projectedRestoreStreak = restoreValidationBefore and tonumber(restoreValidationBefore.ProjectedRestoredStreak) or nil
+		expectation.ProjectedRestoreStreak = projectedRestoreStreak
+		if restoreValidationBefore and restoreValidationBefore.Allowed == true and positiveInteger(projectedRestoreStreak) then
+			expectation.Decision = PRODUCT_DECISION.PurchaseGranted
+			expectation.ExpectedSnapshot.Streak = projectedRestoreStreak
+			expectation.ExpectedSnapshot.MaxStreak = math.max(beforeSnapshot.MaxStreak or 0, projectedRestoreStreak)
+			expectation.ExpectRestoreConsumed = true
+		end
+		return expectation
+	end
+
+	return expectation
+end
+
+local function handleTestReceipt(player, rawProductKey)
+	local productKey = trimMessage(rawProductKey)
+	if productKey == "" then
+		warn(string.format("%s Usage: /testreceipt <productKey>", COMMAND_PREFIX))
+		return
+	end
+
+	local beforeSnapshot = getStatsSnapshot(player)
+	if not beforeSnapshot then
+		warn(string.format("%s /testreceipt %s before snapshot unavailable", COMMAND_PREFIX, productKey))
+		return
+	end
+
+	local restoreValidationBefore = MonetizationService.ValidateRestoreAttempt(player, productKey)
+	local restoreSnapshotBefore = MonetizationService.GetRestoreOfferSnapshot(player)
+	local decision, productConfig = MonetizationService.RunStudioOnlyReceiptTest(player, productKey)
+	local afterSnapshot = getStatsSnapshot(player)
+	if not afterSnapshot then
+		warn(string.format("%s /testreceipt %s after snapshot unavailable", COMMAND_PREFIX, productKey))
+		return
+	end
+
+	local restoreSnapshotAfter = MonetizationService.GetRestoreOfferSnapshot(player)
+	local expectation = getReceiptTestExpectation(productConfig, beforeSnapshot, restoreValidationBefore)
+	local actualGemDelta = (afterSnapshot.Gems or 0) - (beforeSnapshot.Gems or 0)
+	local actualShieldDelta = (afterSnapshot.Shields or 0) - (beforeSnapshot.Shields or 0)
+	local actualKind = type(productConfig) == "table" and tostring(productConfig.Kind or "Unknown") or "Unknown"
+	local snapshotPassed, snapshotMismatches = compareSnapshots(afterSnapshot, expectation.ExpectedSnapshot, COMPARED_FIELDS)
+	local mismatches = {}
+
+	appendMismatch(mismatches, "decision", expectation.Decision, decision)
+	appendMismatch(mismatches, "gemDelta", expectation.ExpectedGemDelta, actualGemDelta)
+	appendMismatch(mismatches, "shieldDelta", expectation.ExpectedShieldDelta, actualShieldDelta)
+	for _, mismatch in ipairs(snapshotMismatches) do
+		table.insert(mismatches, mismatch)
+	end
+
+	if actualKind == "Restore" then
+		if expectation.ExpectRestoreConsumed then
+			appendMismatch(mismatches, "restoreActiveAfter", false, restoreSnapshotAfter and restoreSnapshotAfter.Active == true)
+			appendMismatch(mismatches, "restoreReasonAfter", "Consumed", restoreSnapshotAfter and restoreSnapshotAfter.Reason)
+		else
+			appendMismatch(
+				mismatches,
+				"restoreActiveAfterBlocked",
+				restoreSnapshotBefore and restoreSnapshotBefore.Active == true,
+				restoreSnapshotAfter and restoreSnapshotAfter.Active == true
+			)
+			appendMismatch(
+				mismatches,
+				"restoreReasonAfterBlocked",
+				restoreSnapshotBefore and restoreSnapshotBefore.Reason,
+				restoreSnapshotAfter and restoreSnapshotAfter.Reason
+			)
+		end
+	end
+
+	local passed = snapshotPassed and #mismatches == 0
+
+	print(string.format(
+		"%s receipt=%s kind=%s decision=%s expectedDecision=%s gemDelta=%+d expectedGemDelta=%+d shieldDelta=%+d expectedShieldDelta=%+d projectedRestore=%s",
+		COMMAND_PREFIX,
+		productKey,
+		actualKind,
+		tostring(decision),
+		tostring(expectation.Decision),
+		actualGemDelta,
+		expectation.ExpectedGemDelta,
+		actualShieldDelta,
+		expectation.ExpectedShieldDelta,
+		tostring(expectation.ProjectedRestoreStreak)
+	))
+	print(string.format(
+		"%s receipt before{%s} after{%s}",
+		COMMAND_PREFIX,
+		formatSnapshot(beforeSnapshot),
+		formatSnapshot(afterSnapshot)
+	))
+
+	if passed then
+		print(string.format("%s PASS receipt=%s expectedKind=%s", COMMAND_PREFIX, productKey, expectation.ExpectedKind))
+		return
+	end
+
+	warn(string.format(
+		"%s FAIL receipt=%s actualKind=%s decision=%s expectedDecision=%s gemDelta=%+d expectedGemDelta=%+d shieldDelta=%+d expectedShieldDelta=%+d mismatches=%s",
+		COMMAND_PREFIX,
+		productKey,
+		actualKind,
+		tostring(decision),
+		tostring(expectation.Decision),
+		actualGemDelta,
+		expectation.ExpectedGemDelta,
+		actualShieldDelta,
+		expectation.ExpectedShieldDelta,
+		#mismatches > 0 and table.concat(mismatches, " | ") or "none"
+	))
+end
+
+local function getRestoreTestExpectation(productKey, restoreSnapshot)
+	local productConfig = MonetizationService.GetDeveloperProductConfig(productKey)
+	if type(productConfig) ~= "table" or productConfig.Kind ~= "Restore" then
+		return false, "UnknownRestoreProduct", productConfig
+	end
+
+	if restoreSnapshot and restoreSnapshot.Active == true then
+		if tostring(restoreSnapshot.SelectedRestoreProductKey) == tostring(productKey) then
+			return true, "EligibleForValidationOnly", productConfig
+		end
+
+		return false, "UnknownRestoreProduct", productConfig
+	end
+
+	if restoreSnapshot and restoreSnapshot.Reason == "OfferExpired" then
+		return false, "OfferExpired", productConfig
+	end
+
+	if restoreSnapshot and restoreSnapshot.Reason == "CooldownActive" then
+		return false, "CooldownActive", productConfig
+	end
+
+	return false, "NoActiveOffer", productConfig
+end
+
+local function handleTestRestore(player, rawProductKey)
+	local productKey = trimMessage(rawProductKey)
+	if productKey == "" then
+		warn(string.format("%s Usage: /testrestore <productKey>", COMMAND_PREFIX))
+		return
+	end
+
+	local beforeSnapshot = getStatsSnapshot(player)
+	if not beforeSnapshot then
+		warn(string.format("%s /testrestore %s before snapshot unavailable", COMMAND_PREFIX, productKey))
+		return
+	end
+
+	local restoreSnapshotBefore = MonetizationService.GetRestoreOfferSnapshot(player)
+	local expectedAllowed, expectedReason, productConfig = getRestoreTestExpectation(productKey, restoreSnapshotBefore)
+	local validation = MonetizationService.ValidateRestoreAttempt(player, productKey)
+	local afterSnapshot = getStatsSnapshot(player)
+	if not afterSnapshot then
+		warn(string.format("%s /testrestore %s after snapshot unavailable", COMMAND_PREFIX, productKey))
+		return
+	end
+
+	local unchanged, mismatches = compareSnapshots(afterSnapshot, beforeSnapshot, NO_MUTATION_FIELDS)
+	local actualKind = type(productConfig) == "table" and tostring(productConfig.Kind or "Unknown") or "Unknown"
+	local expectedPreLossStreak = restoreSnapshotBefore and restoreSnapshotBefore.PreLossStreak or nil
+	local expectedTier = restoreSnapshotBefore and restoreSnapshotBefore.SelectedRestoreTier
+		or (type(productConfig) == "table" and tonumber(productConfig.Tier) or nil)
+	local expectedProjectedRestoreStreak = restoreSnapshotBefore and restoreSnapshotBefore.ProjectedRestoredStreak or nil
+	if expectedProjectedRestoreStreak == nil and type(productConfig) == "table" then
+		expectedProjectedRestoreStreak =
+			buildExpectedProjectedRestoreStreak(player, expectedPreLossStreak, expectedTier)
+	end
+	local passed = validation
+		and validation.Allowed == expectedAllowed
+		and validation.Reason == expectedReason
+		and validation.EffectImplemented == false
+		and validation.PreLossStreak == expectedPreLossStreak
+		and validation.ProjectedRestoredStreak == expectedProjectedRestoreStreak
+		and unchanged
+
+	print(string.format(
+		"%s restore=%s kind=%s allowed=%s expectedAllowed=%s reason=%s expectedReason=%s effectImplemented=%s preLoss=%s projected=%s",
+		COMMAND_PREFIX,
+		productKey,
+		actualKind,
+		tostring(validation and validation.Allowed),
+		tostring(expectedAllowed),
+		tostring(validation and validation.Reason),
+		tostring(expectedReason),
+		tostring(validation and validation.EffectImplemented),
+		tostring(validation and validation.PreLossStreak),
+		tostring(validation and validation.ProjectedRestoredStreak)
+	))
+	print(string.format(
+		"%s restore before{%s} after{%s}",
+		COMMAND_PREFIX,
+		formatSnapshot(beforeSnapshot),
+		formatSnapshot(afterSnapshot)
+	))
+
+	if passed then
+		print(string.format("%s PASS restore=%s", COMMAND_PREFIX, productKey))
+		return
+	end
+
+	warn(string.format(
+		"%s FAIL restore=%s allowed=%s expectedAllowed=%s reason=%s expectedReason=%s effectImplemented=%s preLoss=%s expectedPreLoss=%s projected=%s expectedProjected=%s mismatches=%s",
+		COMMAND_PREFIX,
+		productKey,
+		tostring(validation and validation.Allowed),
+		tostring(expectedAllowed),
+		tostring(validation and validation.Reason),
+		tostring(expectedReason),
+		tostring(validation and validation.EffectImplemented),
+		tostring(validation and validation.PreLossStreak),
+		tostring(expectedPreLossStreak),
+		tostring(validation and validation.ProjectedRestoredStreak),
+		tostring(expectedProjectedRestoreStreak),
+		#mismatches > 0 and table.concat(mismatches, " | ") or "none"
+	))
 end
 
 local function handleTestRound(messagePlayer, scenarioName)
@@ -565,9 +924,16 @@ local function handleTestRound(messagePlayer, scenarioName)
 		if not context.beforeCaller or not context.beforeSynthetic then
 			error("snapshot setup failed")
 		end
+		context.preRoundStatsByUserId = {
+			[context.beforeCaller.UserId] = context.beforeCaller,
+			[context.beforeSynthetic.UserId] = context.beforeSynthetic,
+		}
 
 		context.resultPayload = scenario.buildResultPayload(context)
 		StatsService.ApplyRoundResult(context.caller, context.syntheticRival, context.resultPayload)
+		MonetizationService.HandlePostRoundOutcome(
+			buildMonetizationOutcomeContext(context.resultPayload, { context.caller, context.syntheticRival }, context.preRoundStatsByUserId)
+		)
 
 		context.afterCaller = getStatsSnapshot(context.caller)
 		context.afterSynthetic = getStatsSnapshot(context.syntheticRival)
@@ -601,6 +967,12 @@ local exactCommandHandlers = {
 	["/setvip"] = function()
 		warn(string.format("%s Usage: /setvip on | /setvip off", COMMAND_PREFIX))
 	end,
+	["/testreceipt"] = function()
+		warn(string.format("%s Usage: /testreceipt <productKey>", COMMAND_PREFIX))
+	end,
+	["/testrestore"] = function()
+		warn(string.format("%s Usage: /testrestore <productKey>", COMMAND_PREFIX))
+	end,
 	["/testround"] = function()
 		warn(string.format("%s Usage: /testround %s", COMMAND_PREFIX, getScenarioUsage()))
 	end,
@@ -610,6 +982,14 @@ local patternCommandHandlers = {
 	{
 		pattern = "^/setvip%s+([%w_]+)$",
 		handler = handleSetVip,
+	},
+	{
+		pattern = "^/testreceipt%s+([%w_]+)$",
+		handler = handleTestReceipt,
+	},
+	{
+		pattern = "^/testrestore%s+([%w_]+)$",
+		handler = handleTestRestore,
 	},
 	{
 		pattern = "^/testround%s+([%w_]+)$",
@@ -636,7 +1016,7 @@ local function dispatchCommand(player, trimmed)
 end
 
 local function attachChatHooks(player)
-	if not isRealPlayer(player) then
+	if not canUseHarnessCommands(player) then
 		return
 	end
 

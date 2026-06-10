@@ -29,6 +29,27 @@ local function attachDevChatHooks(player)
 	player.Chatted:Connect(function(msg)
 		if msg == "/plugins" then
 			print("Available Plugins:", PluginRegistry.List())
+		elseif msg == "/cmds" then
+			print("[StudioCmds] Legacy dev commands:")
+			print("[StudioCmds] /plugins")
+			print("[StudioCmds] /run <pluginName>")
+			print("[StudioCmds] /shields <amount>")
+			print("[StudioCmds] /gems <amount>")
+			print("[StudioCmds] /shieldtest")
+			print("[StudioCmds] Harness/debug commands:")
+			print("[StudioCmds] /dumpstats")
+			print("[StudioCmds] /dumpstats all")
+			print("[StudioCmds] /dumpmonetization")
+			print("[StudioCmds] /setvip on")
+			print("[StudioCmds] /setvip off")
+			print("[StudioCmds] /testreceipt <productKey>")
+			print("[StudioCmds] /testrestore <productKey>")
+			print("[StudioCmds] /testround single_win_p1")
+			print("[StudioCmds] /testround single_lose_p1")
+			print("[StudioCmds] /testround draw")
+			print("[StudioCmds] /testround vip_single_win_p1")
+			print("[StudioCmds] /testround vip_draw_mixed")
+			print("[StudioCmds] /testround both_lose")
 		elseif string.sub(msg, 1, 5) == "/run " then
 			local name = string.sub(msg, 6)
 			print("Running Plugin:", name)
@@ -36,11 +57,12 @@ local function attachDevChatHooks(player)
 			print("Result:", result)
 		elseif string.sub(msg, 1, 9) == "/shields " then
 			local amount = tonumber(string.sub(msg, 10))
-			if amount and amount > 0 then
-				local ok = StatsService.AddShields(player, math.floor(amount))
-				print("[Shield] /shields", amount, "->", ok and "OK" or "FAIL", "inventory:", StatsService.GetShields(player))
+			if amount and amount >= 0 then
+				local wholeAmount = math.floor(amount)
+				local ok = StatsService.SetShields(player, wholeAmount, "DevCommand")
+				print("[Shield] /shields set", wholeAmount, "->", ok and "OK" or "FAIL", "inventory:", StatsService.GetShields(player))
 			else
-				print("[Shield] Usage: /shields <amount> (e.g. /shields 5)")
+				print("[Shield] Usage: /shields <amount> (e.g. /shields 0)")
 			end
 		elseif string.sub(msg, 1, 6) == "/gems " then
 			local amount = tonumber(string.sub(msg, 7))

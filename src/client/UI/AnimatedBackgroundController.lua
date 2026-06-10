@@ -5,12 +5,12 @@ local AnimatedBackgroundController = {}
 
 -- Rarity Tints (Subtle)
 local RARITY_TINTS = {
-	Common = Color3.fromRGB(150, 150, 150),
-	Uncommon = Color3.fromRGB(100, 200, 120),
-	Rare = Color3.fromRGB(100, 180, 255),
-	Epic = Color3.fromRGB(180, 100, 255),
-	Mythic = Color3.fromRGB(255, 200, 50),
-	Ultra = Color3.fromRGB(255, 255, 100)
+	Common = Theme.Colors.Ice,
+	Uncommon = Theme.Colors.Mint,
+	Rare = Theme.Colors.AuroraCyan,
+	Epic = Theme.Colors.HotPink,
+	Mythic = Theme.Colors.RewardGold,
+	Ultra = Theme.Blend(Theme.Colors.RewardGold, Theme.Colors.AuroraCyan, 0.45),
 }
 
 function AnimatedBackgroundController.GetTintColor(rarity)

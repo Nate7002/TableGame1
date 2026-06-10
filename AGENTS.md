@@ -200,11 +200,22 @@ Use the harness for:
 - `/dumpmonetization`
 - `/setvip on`
 - `/setvip off`
+- `/testreceipt <productKey>`
+- `/testrestore <productKey>`
 - `/testround single_win_p1`
+- `/testround single_lose_p1`
 - `/testround draw`
 - `/testround vip_single_win_p1`
 - `/testround vip_draw_mixed`
 - `/testround both_lose`
+
+### Studio automation note
+- current Studio MCP/tooling can start/stop playtests and read output logs
+- it cannot directly execute code inside the live play server or inject `player.Chatted` commands during play
+- therefore harness commands are normally run manually through Studio chat
+- if temporary automation is needed, use a short-lived uncommitted `LocalScript` probe under `StarterPlayerScripts` that sends commands through `TextChatService.TextChannels.RBXGeneral`
+- remove the probe after testing
+- do not commit the probe or turn it into a permanent/public command surface
 
 ### Rules
 - `DevTestService` is orchestration-only

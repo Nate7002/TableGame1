@@ -79,6 +79,18 @@ local function playersToUniqueUserIds(playersArray)
 	return userIds
 end
 
+local function buildPreRoundStatsByUserId(playersArray)
+	local statsByUserId = {}
+
+	for _, player in ipairs(playersArray or {}) do
+		if player and player.Parent then
+			statsByUserId[player.UserId] = StatsService.GetStats(player)
+		end
+	end
+
+	return statsByUserId
+end
+
 local function resolveCashAwards(playerA, playerB, resultPayload)
 	local baseRewardCash = math.max(0, math.floor(tonumber(resultPayload.rewardCash) or 0))
 	local players = { playerA, playerB }
@@ -165,6 +177,26 @@ local function getRoundBranchLabel(resultPayload)
 	end
 
 	return "single_winner"
+end
+
+local function buildMonetizationOutcomeContext(resultPayload, participants, preRoundStatsByUserId)
+	resultPayload = type(resultPayload) == "table" and resultPayload or {}
+	local loserUserId = resultPayload.loserUserId
+	local loserPreLossStats = type(preRoundStatsByUserId) == "table" and preRoundStatsByUserId[loserUserId] or nil
+	local loserPreLossStreak = type(loserPreLossStats) == "table" and tonumber(loserPreLossStats.Streak) or nil
+
+	return {
+		RoundId = resultPayload.roundId,
+		ParticipantUserIds = playersToUniqueUserIds(participants),
+		WinnerUserId = resultPayload.winnerUserId,
+		LoserUserId = resultPayload.loserUserId,
+		LoserPreLossStreak = loserPreLossStreak,
+		DidDraw = resultPayload.didDraw == true,
+		DidBothLose = resultPayload.didBothLose == true,
+		WasAborted = resultPayload.wasAborted == true,
+		IsNeutral = resultPayload.isNeutral == true,
+		StreakProtectedLoserUserIds = resultPayload.streakProtectedLoserUserIds or {},
+	}
 end
 
 local function formatRoundDebugStats(stats)
@@ -720,6 +752,7 @@ function RoundService.StartRound(tableModel, players)
 			shieldConsumeUserIds = {},
 			shieldDisarmUserIds = {},
 		}
+		local preRoundStatsByUserId = buildPreRoundStatsByUserId(participants)
 		
 		if not isNeutral then
 			if #winners == 0 then
@@ -766,6 +799,7 @@ function RoundService.StartRound(tableModel, players)
 				cashAwards = formatCashAwardLogEntries(playerA, playerB, resultPayload.cashAwardByUserId)
 			})
 			StatsService.ApplyRoundResult(playerA, playerB, resultPayload)
+			MonetizationService.HandlePostRoundOutcome(buildMonetizationOutcomeContext(resultPayload, participants, preRoundStatsByUserId))
 
 			local livePlayerAPost = playerA and Players:GetPlayerByUserId(playerA.UserId) or nil
 			local livePlayerBPost = playerB and Players:GetPlayerByUserId(playerB.UserId) or nil
@@ -812,6 +846,8 @@ function RoundService.StartRound(tableModel, players)
 					refsAgreeB = tostring(playerB ~= nil and playerB == delayedLivePlayerB)
 				})
 			end)
+		else
+			MonetizationService.HandlePostRoundOutcome(buildMonetizationOutcomeContext(resultPayload, participants, preRoundStatsByUserId))
 		end
 		
 		-- Log
@@ -919,6 +955,13 @@ function HandleOpponentLeave(tableModel, leaverUserId, currentState)
 			OpponentLeftToast:FireClient(p, "Opponent left! Ending match...", 2)
 		end
 	end
+
+	-- RoundService clears restore UI state for round-lifecycle teardown.
+	for _, p in ipairs(session.players) do
+		if p then
+			MonetizationService.ClearRestoreOffer(p, "OpponentLeft")
+		end
+	end
 	
 	local StopSpinCinematic = Remotes:FindFirstChild("StopSpinCinematic")
 	if StopSpinCinematic then
@@ -951,6 +994,7 @@ function AbortRound(tableModel, reason)
 	
 	if session.players and #session.players >= 2 then
 		local roundId = tableModel.Name .. "_abort_" .. tostring(os.clock())
+		local preRoundStatsByUserId = buildPreRoundStatsByUserId(session.players)
 		local resultPayload = {
 			roundId = roundId,
 			wasAborted = true,
@@ -958,6 +1002,14 @@ function AbortRound(tableModel, reason)
 			reason = reason
 		}
 		StatsService.ApplyRoundResult(session.players[1], session.players[2], resultPayload)
+		MonetizationService.HandlePostRoundOutcome(buildMonetizationOutcomeContext(resultPayload, session.players, preRoundStatsByUserId))
+	end
+
+	-- RoundService clears restore UI state for round-lifecycle teardown.
+	for _, p in ipairs(session.players) do
+		if p then
+			MonetizationService.ClearRestoreOffer(p, "AbortRound")
+		end
 	end
 	
 	if session.spinCleanup then

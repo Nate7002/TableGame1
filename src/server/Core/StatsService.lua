@@ -476,6 +476,73 @@ function StatsService.SpendGems(player, amount, reason)
 	return true
 end
 
+function StatsService.RestoreStreak(player, targetStreak, reason)
+	if not (player and player.Parent) then return false end
+	if type(targetStreak) ~= "number" or targetStreak < 0 or math.floor(targetStreak) ~= targetStreak then
+		DebugService.Warn("STATS", "STREAK_RESTORE_INVALID", {
+			userId = player.UserId,
+			targetStreak = targetStreak,
+			reason = reason,
+		})
+		return false
+	end
+
+	local stats = ensureStats(player)
+	local previousStreak = tonumber(stats.Streak) or 0
+	local previousMaxStreak = tonumber(stats.MaxStreak) or 0
+	local previousWeeklyMaxStreak = tonumber(stats.WeeklyMaxStreak) or 0
+
+	stats.Streak = targetStreak
+	stats.MaxStreak = math.max(previousMaxStreak, targetStreak)
+	stats.WeeklyMaxStreak = math.max(previousWeeklyMaxStreak, targetStreak)
+
+	asyncSavePlayer(player, reason or "RestoreStreak")
+	StatsChanged:Fire(player)
+
+	DebugService.Info("STATS", "STREAK_RESTORED", {
+		userId = player.UserId,
+		previousStreak = previousStreak,
+		targetStreak = targetStreak,
+		reason = reason,
+	})
+
+	PushStatsUpdate(player)
+	return true
+end
+
+function StatsService.SetShields(player, amount, reason)
+	if not (player and player.Parent) then return false end
+	if type(amount) ~= "number" or amount < 0 then
+		DebugService.Warn("STATS", "SHIELD_SET_INVALID", {
+			userId = player.UserId,
+			amount = amount,
+			reason = reason,
+		})
+		return false
+	end
+
+	local stats = ensureStats(player)
+	local target = math.clamp(math.floor(amount), 0, MAX_SHIELDS)
+
+	stats.Shields = target
+
+	asyncSavePlayer(player, reason or "ShieldSet")
+	StatsChanged:Fire(player)
+
+	DebugService.Info("STATS", "SHIELD_SET", {
+		userId = player.UserId,
+		requested = amount,
+		total = stats.Shields,
+		reason = reason,
+	})
+
+	PushStatsUpdate(player)
+	if UIService.FireShieldChanged then
+		UIService.FireShieldChanged(player, stats.Shields)
+	end
+	return true
+end
+
 function StatsService.AddShields(player, amount)
 	if not (player and player.Parent) then return false end
 	if type(amount) ~= "number" or amount <= 0 then

@@ -9,20 +9,29 @@ function CountdownWidget.new(parent)
 	-- Container Pill
 	local frame = Instance.new("Frame")
 	frame.Name = "CountdownWidget"
-	frame.BackgroundColor3 = Theme.Colors.Secondary
+	frame.BackgroundColor3 = Theme.Surface.Base
 	frame.BorderSizePixel = 0
-	frame.Size = UDim2.fromOffset(50, 36)
+	frame.Size = UDim2.fromOffset(62, 44)
 	frame.ZIndex = 20 -- Widget Layer
 	frame.Parent = parent
 	self._frame = frame
 	
-	Instance.new("UICorner", frame).CornerRadius = UDim.new(0, 8)
+	Instance.new("UICorner", frame).CornerRadius = Theme.Sizes.ButtonRadius
+
+	local gradient = Instance.new("UIGradient")
+	gradient.Color = ColorSequence.new({
+		ColorSequenceKeypoint.new(0, Theme.Surface.Base),
+		ColorSequenceKeypoint.new(1, Theme.Surface.Glass),
+	})
+	gradient.Rotation = 90
+	gradient.Parent = frame
 	
 	local stroke = Instance.new("UIStroke")
-	stroke.Color = Theme.Colors.TextDim
-	stroke.Thickness = 1
-	stroke.Transparency = 0.8
+	stroke.Color = Theme.Border.Soft
+	stroke.Thickness = 2
+	stroke.Transparency = 0.18
 	stroke.Parent = frame
+	self._stroke = stroke
 	
 	-- Number Label
 	local value = Instance.new("TextLabel")
@@ -32,7 +41,7 @@ function CountdownWidget.new(parent)
 	value.Position = UDim2.new(0, 0, 0, 0)
 	value.Font = Theme.Font.Header
 	value.Text = "--"
-	value.TextColor3 = Theme.Colors.Danger
+	value.TextColor3 = Theme.Colors.Text
 	value.TextSize = 22
 	value.TextXAlignment = Enum.TextXAlignment.Center
 	value.ZIndex = 20
@@ -51,6 +60,24 @@ end
 function CountdownWidget:Update(remainingSeconds)
 	if not self._frame then return end
 	if remainingSeconds < 0 then remainingSeconds = 0 end
+
+	if remainingSeconds >= 4 then
+		self._frame.BackgroundColor3 = Theme.Surface.Base
+		self._valueLabel.TextColor3 = Theme.Colors.Text
+		self._valueLabel.TextSize = 22
+		self._stroke.Color = Theme.Border.Soft
+	elseif remainingSeconds == 3 or remainingSeconds == 2 then
+		self._frame.BackgroundColor3 = Theme.Blend(Theme.Surface.Base, Theme.Colors.Warning, 0.3)
+		self._valueLabel.TextColor3 = Theme.Colors.Text
+		self._valueLabel.TextSize = 24
+		self._stroke.Color = Theme.Colors.Warning
+	else
+		self._frame.BackgroundColor3 = Theme.Blend(Theme.Surface.Base, Theme.Colors.Danger, 0.3)
+		self._valueLabel.TextColor3 = Theme.Colors.Danger
+		self._valueLabel.TextSize = 28
+		self._stroke.Color = Theme.Colors.Danger
+	end
+
 	self._valueLabel.Text = tostring(remainingSeconds) .. "s"
 end
 

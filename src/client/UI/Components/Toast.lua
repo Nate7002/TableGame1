@@ -13,6 +13,7 @@ local FAST_HIDE_DURATION = 0.12 -- Step D: Fast hide duration
 function Toast.new(parentGui)
 	local self = setmetatable({}, Toast)
 	self._parent = parentGui
+	self._shadow = nil
 	self._frame = nil
 	self._label = nil
 	self._uiStroke = nil
@@ -48,34 +49,74 @@ function Toast:_ensureFrame()
 	
 	if not self._parent then return end
 	
+	local shadow = Instance.new("Frame")
+	shadow.Name = "ToastShadow"
+	shadow.BackgroundColor3 = Theme.Shadow.Color
+	shadow.BackgroundTransparency = 1
+	shadow.BorderSizePixel = 0
+	shadow.Position = UDim2.new(0.5, 0, 0.85, 4)
+	shadow.Size = UDim2.new(0, 360, 0, 64)
+	shadow.AnchorPoint = Vector2.new(0.5, 1)
+	shadow.ZIndex = 94
+	shadow.Parent = self._parent
+
+	local shadowCorner = Instance.new("UICorner")
+	shadowCorner.CornerRadius = Theme.Sizes.ChipRadius
+	shadowCorner.Parent = shadow
+
 	-- Create frame
 	local frame = Instance.new("Frame")
 	frame.Name = "Toast"
-	frame.BackgroundColor3 = Theme.Colors.Secondary
+	frame.BackgroundColor3 = Theme.Surface.Base
 	frame.BorderSizePixel = 0
 	frame.Position = UDim2.new(0.5, 0, 0.85, 0)
-	frame.Size = UDim2.new(0, 300, 0, 50)
+	frame.Size = UDim2.new(0, 360, 0, 64)
 	frame.AnchorPoint = Vector2.new(0.5, 1)
+	frame.ZIndex = 95
 	frame.Parent = self._parent
 	
 	local uiCorner = Instance.new("UICorner")
-	uiCorner.CornerRadius = Theme.Sizes.CornerRadius
+	uiCorner.CornerRadius = Theme.Sizes.ChipRadius
 	uiCorner.Parent = frame
+
+	local gradient = Instance.new("UIGradient")
+	gradient.Color = ColorSequence.new({
+		ColorSequenceKeypoint.new(0, Theme.Surface.Base),
+		ColorSequenceKeypoint.new(1, Theme.Surface.Glass),
+	})
+	gradient.Rotation = 90
+	gradient.Parent = frame
 	
 	local uiStroke = Instance.new("UIStroke")
-	uiStroke.Color = Theme.Colors.TextDim
-	uiStroke.Thickness = 1
-	uiStroke.Transparency = 0.8
+	uiStroke.Color = Theme.Border.Soft
+	uiStroke.Thickness = 2
+	uiStroke.Transparency = 0.18
 	uiStroke.Parent = frame
 	
+	local innerGlow = Instance.new("Frame")
+	innerGlow.Name = "InnerGlow"
+	innerGlow.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+	innerGlow.BackgroundTransparency = 0.7
+	innerGlow.BorderSizePixel = 0
+	innerGlow.Position = UDim2.new(0, 8, 0, 7)
+	innerGlow.Size = UDim2.new(1, -16, 0, 22)
+	innerGlow.ZIndex = 96
+	innerGlow.Parent = frame
+
+	local glowCorner = Instance.new("UICorner")
+	glowCorner.CornerRadius = UDim.new(0, 12)
+	glowCorner.Parent = innerGlow
+
 	local label = Instance.new("TextLabel")
 	label.BackgroundTransparency = 1
-	label.Size = UDim2.new(1, -24, 1, 0)
-	label.Position = UDim2.new(0, 12, 0, 0)
+	label.Size = UDim2.new(1, -36, 1, 0)
+	label.Position = UDim2.new(0, 18, 0, 0)
 	label.Font = Theme.Font.Body
 	label.TextColor3 = Theme.Colors.Text
-	label.TextSize = Theme.Sizes.TextBody
+	label.TextSize = Theme.Sizes.TextBody + 1
 	label.TextWrapped = true
+	label.TextXAlignment = Enum.TextXAlignment.Center
+	label.ZIndex = 97
 	label.Parent = frame
 	
 	local labelStroke = Instance.new("UIStroke")
@@ -85,6 +126,8 @@ function Toast:_ensureFrame()
 	labelStroke.Parent = label
 	
 	-- Set initial hidden state for smooth first-time easing
+	shadow.BackgroundTransparency = 1
+	shadow.Position = UDim2.new(0.5, 0, 0.85, 6)
 	frame.BackgroundTransparency = 1
 	frame.Position = UDim2.new(0.5, 0, 0.85, 0)
 	uiStroke.Transparency = 1
@@ -93,6 +136,7 @@ function Toast:_ensureFrame()
 	labelStroke.Transparency = 1
 	
 	-- Store references
+	self._shadow = shadow
 	self._frame = frame
 	self._label = label
 	self._uiStroke = uiStroke
@@ -109,10 +153,15 @@ function Toast:_animateShow()
 	
 	local showInfo = TweenInfo.new(SHOW_DURATION, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
 	
+	local shadowTween = TweenService:Create(self._shadow, showInfo, {
+		Position = UDim2.new(0.5, 0, 0.8, 5),
+		BackgroundTransparency = Theme.Shadow.Transparency,
+	})
+
 	-- Tween frame position + background
 	local frameTween = TweenService:Create(self._frame, showInfo, {
 		Position = UDim2.new(0.5, 0, 0.8, 0),
-		BackgroundTransparency = 0.1
+		BackgroundTransparency = 0.04
 	})
 	
 	-- Tween label text + stroke (CRITICAL: both TextTransparency AND TextStrokeTransparency)
@@ -123,7 +172,7 @@ function Toast:_animateShow()
 	
 	-- Tween frame stroke
 	local frameStrokeTween = TweenService:Create(self._uiStroke, showInfo, {
-		Transparency = 0.8
+		Transparency = 0.18
 	})
 	
 	-- Tween label stroke (on the label itself)
@@ -132,7 +181,7 @@ function Toast:_animateShow()
 	})
 	
 	-- Store tweens
-	self._activeTweens = {frameTween, labelTween, frameStrokeTween, labelStrokeTween}
+	self._activeTweens = {shadowTween, frameTween, labelTween, frameStrokeTween, labelStrokeTween}
 	
 	-- Play all tweens
 	for _, tween in ipairs(self._activeTweens) do
@@ -151,6 +200,11 @@ function Toast:_animateHide(onComplete, duration)
 	
 	local hideInfo = TweenInfo.new(hideDuration, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
 	
+	local shadowTween = TweenService:Create(self._shadow, hideInfo, {
+		Position = UDim2.new(0.5, 0, 0.75, 7),
+		BackgroundTransparency = 1,
+	})
+
 	-- Tween frame position + background
 	local frameTween = TweenService:Create(self._frame, hideInfo, {
 		Position = UDim2.new(0.5, 0, 0.75, 0),
@@ -174,7 +228,7 @@ function Toast:_animateHide(onComplete, duration)
 	})
 	
 	-- Store tweens
-	self._activeTweens = {frameTween, labelTween, frameStrokeTween, labelStrokeTween}
+	self._activeTweens = {shadowTween, frameTween, labelTween, frameStrokeTween, labelStrokeTween}
 	
 	-- Play all tweens
 	for _, tween in ipairs(self._activeTweens) do
@@ -210,6 +264,10 @@ function Toast:Show(text, duration)
 	self._hideTask = task.delay(duration, function()
 		self:_animateHide(function()
 			if self._frame and self._frame.Parent then
+				if self._shadow and self._shadow.Parent then
+					self._shadow:Destroy()
+					self._shadow = nil
+				end
 				self._frame:Destroy()
 				self._frame = nil
 				self._label = nil
@@ -225,6 +283,10 @@ function Toast:HideFast()
 	self:_cancelHideTask()
 	self:_animateHide(function()
 		if self._frame and self._frame.Parent then
+			if self._shadow and self._shadow.Parent then
+				self._shadow:Destroy()
+				self._shadow = nil
+			end
 			self._frame:Destroy()
 			self._frame = nil
 			self._label = nil
@@ -238,6 +300,10 @@ end
 function Toast:HideImmediate()
 	self:_cancelHideTask()
 	self:_cancelTweens()
+	if self._shadow then
+		self._shadow:Destroy()
+		self._shadow = nil
+	end
 	if self._frame then
 		self._frame:Destroy()
 		self._frame = nil

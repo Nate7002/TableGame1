@@ -1,7 +1,7 @@
-# TableGame1 — System Doc (Source of Truth)
+# TableGame1 - System Doc (Source of Truth)
 
-Version: **V6**  
-Last updated: **Mar 11, 2026**
+Version: **V7**  
+Last updated: **Mar 16, 2026**
 
 This document is the **authoritative memory + design contract** for TableGame1.  
 It exists so the project can be resumed in *any* future chat without loss of context.
@@ -22,12 +22,20 @@ A Roblox table-PvP game where players sit at tables, play fast minigames, earn p
 
 - Step 7 (Data Saving / Loading + round polish) is **complete**.
 - Step 9 (Economy Foundation) is **complete**.
-- Step 10A (Monetization Foundation) is **complete**.
-- Step 10B (VIP 2x Cash Integration) is **complete**.
+- Step 10 backend monetization is **complete**.
+- Step 10 included:
+
+  - centralized receipt routing
+  - gem developer-product fulfillment
+  - shield developer-product fulfillment
+  - restore authority seam
+  - restore fulfillment
+
+- Step 10F (shield activation / pre-match consumption polish) was reviewed and did **not** require a new implementation slice.
 - The game has been **playtested with real players** in multi-client sessions.
 - Core loop is stable:
 
-  - join table → force sit
+  - join table -> force sit
   - countdown
   - spin cinematic
   - stage UI (choices)
@@ -46,8 +54,14 @@ A Roblox table-PvP game where players sit at tables, play fast minigames, earn p
   - Shields persistence
   - VIP reward multiplier routing
   - explicit stats-update/toast contract cleanup
+  - restore offer state, expiry, cooldown, and consumption
 
-- The project now has a **Studio-only backend test harness** for authoritative backend validation.
+- The project now has:
+
+  - centralized receipt routing
+  - backend fulfillment for Gems, Shields, and Restore
+  - a Studio-only backend test harness for authoritative backend validation
+
 - Current harness/debug coverage includes:
 
   - `/dumpstats`
@@ -55,7 +69,10 @@ A Roblox table-PvP game where players sit at tables, play fast minigames, earn p
   - `/dumpmonetization`
   - `/setvip on`
   - `/setvip off`
+  - `/testreceipt <productKey>`
+  - `/testrestore <productKey>`
   - `/testround single_win_p1`
+  - `/testround single_lose_p1`
   - `/testround draw`
   - `/testround vip_single_win_p1`
   - `/testround vip_draw_mixed`
@@ -66,7 +83,7 @@ A Roblox table-PvP game where players sit at tables, play fast minigames, earn p
 **Remaining work is now structured feature expansion, not core-loop rescue.**
 
 This project is no longer prototype territory.  
-It is now a real game with working backend foundations, verified progression systems, and a reusable internal testing workflow.
+It is now a real game with working backend foundations, verified progression systems, a reusable internal testing workflow, and a completed backend monetization engine.
 
 ---
 
@@ -79,7 +96,7 @@ Inspired by:
 - Bomb-chip / table minigames
 - Split/Steal RNG tension loops
 
-The goal is not one game — it’s a **reusable engine** for table-based PvP games.
+The goal is not one game - it is a **reusable engine** for table-based PvP games.
 
 ---
 
@@ -120,7 +137,7 @@ It should:
 ## 5) Workflow (Anti-Drown)
 
 Golden loop:  
-**Build → Test → Commit → Push**
+**Build -> Test -> Commit -> Push**
 
 No skipping steps.
 
@@ -161,35 +178,39 @@ MCPs should be used to confirm reality before changing code.
 
 ## 7) Roadmap (High Level)
 
-### Phase 1 — MVP (DONE)
+### Phase 1 - MVP (DONE)
 
-Steps 0–7 complete.
+Steps 0-7 complete.
 
-### Phase 2 — Retention / Economy / Monetization (CURRENT)
+### Phase 2 - Retention / Economy / Monetization
 
-Completed in this phase so far:
+Completed in this phase:
 
 - Step 8 foundation/pacing work (partially addressed through ongoing polish)
 - Step 9 economy foundation
-- Step 10A monetization foundation
-- Step 10B VIP 2x cash integration
+- Step 10 backend monetization
 
-### Current remaining backend priority
+### Step 10 Completed
 
-Finish the rest of **Step 10** in small slices:
+Step 10 backend monetization is now complete:
 
-- centralized receipt routing
-- gem purchase dev products
-- shield purchase dev product
-- shield inventory / activation completion
-- restore authority seam
-- restore tiered dev products
+- centralized receipt routing complete
+- gem dev products complete
+- shield dev product complete
+- restore authority seam complete
+- restore tiered products complete
+- shield activation authority reviewed; no new implementation slice required
+
+### Current Next Phase
+
+- Step 11 - Protection Surface (Minimal UI)
+- Step 12 - Economy HUD Surface
+- Step 13 - Lean Shop
 
 ### Later
 
-- Step 11 protection UI surface
-- Step 12 economy HUD surface
-- Step 13 lean shop
+- Step 14 - Idle System
+- Step 15 - Emote System
 - later retention / cosmetics / scaling work
 
 ---
@@ -249,7 +270,7 @@ Standard split/steal rules apply.
 
 ## 11) Spin Stage (Finalized)
 
-- Fast → slow item cycling
+- Fast -> slow item cycling
 - Visual RNG only (odds unchanged)
 - No consecutive identical items
 - Billboard shows name, rarity, value
@@ -273,7 +294,7 @@ Saved:
 
 Datastore hardened for disconnects and aborts.
 
-### 12.1 Datastore Isolation (DEV vs PROD) — CRITICAL
+### 12.1 Datastore Isolation (DEV vs PROD) - CRITICAL
 
 **Goal:** Testing in Studio must never touch live/public player data.
 
@@ -299,12 +320,12 @@ We implemented/standardized a **namespace split**:
 DataService exposes:
 
 - `DataService.GetNamespace() -> "DEV" | "PROD" | other`
-- `DataService.IsApiEnabled()` remains authoritative for “datastore usable?”
+- `DataService.IsApiEnabled()` remains authoritative for "datastore usable?"
 
 **Recommended default behavior:**
 
-- If `RunService:IsStudio()` → `"DEV"`
-- Else → `"PROD"`
+- If `RunService:IsStudio()` -> `"DEV"`
+- Else -> `"PROD"`
 
 ### 12.3 OrderedDataStore Namespacing for Leaderboards
 
@@ -315,7 +336,7 @@ Store naming pattern used:
 - Overall: `LB_OVERALL_<NAMESPACE>_<CATEGORY>`
 - Weekly: `LB_WEEKLY_<NAMESPACE>_<WEEKKEY>_<CATEGORY>`
 
-Where CATEGORY ∈ {MaxStreak, GamesPlayed, Donations}
+Where CATEGORY is one of `{MaxStreak, GamesPlayed, Donations}`
 
 This prevents Studio leaderboard testing from polluting live leaderboard values.
 
@@ -335,7 +356,7 @@ Confirmed via testing:
 - React-ready boundary enforced
 - UIController is sole PlayerGui owner
 
-UI remains presentation-only.
+UI remains presentation-only.  
 It must not own:
 
 - gameplay rules
@@ -351,8 +372,9 @@ It must not own:
 - camera micro-artifacts (rare)
 - UI animation runtime hardening
 - emotional pacing
-- remaining Step 10 backend completion
-- protection/economy UI surfaces
+- Step 11 protection surface
+- Step 12 economy HUD surface
+- Step 13 lean shop surface
 
 ---
 
@@ -376,7 +398,7 @@ It must not own:
 
 ---
 
-## 16) Studio Backend Test Harness (NEW)
+## 16) Studio Backend Test Harness
 
 A Studio-only backend harness now exists for fast authoritative backend validation in live Studio runtime.
 
@@ -432,6 +454,7 @@ It must not:
 ### Current Studio-Only Command Surface
 
 #### Legacy dev commands
+
 - `/plugins`
 - `/run <pluginName>`
 - `/shields <amount>`
@@ -439,20 +462,38 @@ It must not:
 - `/shieldtest`
 
 #### Harness/debug commands
+
 - `/dumpstats`
 - `/dumpstats all`
 - `/dumpmonetization`
 - `/setvip on`
 - `/setvip off`
+- `/testreceipt <productKey>`
+- `/testrestore <productKey>`
 - `/testround single_win_p1`
+- `/testround single_lose_p1`
 - `/testround draw`
 - `/testround vip_single_win_p1`
 - `/testround vip_draw_mixed`
 - `/testround both_lose`
 
+### Studio Automation Note
+
+- current Studio MCP/tooling can start/stop playtests and read output logs
+- it cannot directly execute code inside the live play server or inject `player.Chatted` commands during play
+- therefore harness commands are normally run manually through Studio chat
+- if temporary automation is needed, use a short-lived uncommitted `LocalScript` probe under `StarterPlayerScripts` that sends commands through `TextChatService.TextChannels.RBXGeneral`
+- remove the probe after testing
+- do not commit the probe or turn it into a permanent/public command surface
+
+### Final Step 10 Verification Notes
+
+- shield-protected single loss was verified not to open restore
+- reconnect cleanup for active restore offers remains environment-limited in local Studio and is not treated as a blocker
+
 ### Testing Doctrine
 
-Use the harness for backend correctness.
+Use the harness for backend correctness.  
 Use manual playtesting for human-facing validation.
 
 Rule of thumb:
@@ -462,7 +503,7 @@ Rule of thumb:
 
 ### Data Safety
 
-The harness is Studio-only and must remain DEV-safe.
+The harness is Studio-only and must remain DEV-safe.  
 It must never become a production/public command surface.
 
 ---
