@@ -1,0 +1,69 @@
+name: Bug report
+description: Report incorrect behavior in TableGame1
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug. Please include reproduction steps and Studio context.
+
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: Clear description of the bug.
+      placeholder: e.g. Shield count did not update after using a shield while waiting at a table.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect?
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: Numbered steps help a lot.
+      placeholder: |
+        1. Open TableGame1.rbxl and sync Rojo
+        2. Start Server + 2 Players
+        3. ...
+    validations:
+      required: true
+
+  - type: dropdown
+    id: environment
+    attributes:
+      label: Environment
+      options:
+        - Roblox Studio (Play solo)
+        - Roblox Studio (Server + multiple players)
+        - Published experience
+        - Not tested yet
+    validations:
+      required: true
+
+  - type: input
+    id: branch
+    attributes:
+      label: Branch or commit (optional)
+      placeholder: main @ abc1234
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Output / logs (optional)
+      description: Relevant lines from the Output window.
+
+  - type: checkboxes
+    id: security
+    attributes:
+      label: Security
+      options:
+        - label: This looks like an exploitable security issue (do not include exploit details here — see SECURITY.md)
+          required: false

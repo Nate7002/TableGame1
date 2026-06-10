@@ -1,0 +1,9 @@
+name: config.yml
+blank_issues_enabled: true
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/Nate7002/TableGame1/security/advisories/new
+    about: Report security issues privately (see SECURITY.md)
+  - name: Architecture docs
+    url: https://github.com/Nate7002/TableGame1/blob/main/docs/ARCHITECTURE.md
+    about: Read system design before large changes

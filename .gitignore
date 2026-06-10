@@ -1,0 +1,23 @@
+# Roblox place lock files
+*.rbxl.lock
+*.rbxlx.lock
+
+# Rojo build output (if used)
+/build/
+
+# rbxsync / Studio sync trash
+.rbxsync-trash/
+
+# Aftman local auth (may contain tokens)
+.aftman/
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+
+# Local-only test probes (see AGENTS.md)
+**/StarterPlayerScripts/*Probe*
+**/StarterPlayerScripts/*probe*
